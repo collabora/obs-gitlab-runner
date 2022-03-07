@@ -1,0 +1,43 @@
+[package]
+name = "obs-gitlab-runner"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+async-trait = "0.1"
+base16ct = { version = "0.1", features = ["std"] }
+bytes = "1.1"
+camino = "1.0"
+clap = { version = "3.1", features = ["default", "derive", "env"] }
+color-eyre = "0.6"
+derivative = "2.2"
+futures-util = "0.3"
+md-5 = "0.10"
+rfc822-like = "0.2"
+serde = "1.0"
+serde_json = "1.0"
+serde_yaml = "0.8"
+shellexpand = { version = "2.1", package = "shellexpand-fork" }
+shell-words = "1.1"
+tempfile = "3.3"
+tokio = { version = "1.16", features = ["full"] }
+tokio-util = { version = "0.7", features = ["full"] }
+tracing = "0.1"
+tracing-error = "0.2"
+tracing-subscriber = "0.3"
+url = "2.2"
+
+# gitlab-runner = { git = "https://github.com/collabora/gitlab-runner-rs", branch = "wip/sjoerd/0.2" }
+gitlab-runner = { path = "../gitlab-runner-rs/gitlab-runner" }
+open-build-service-api = { path = "../open-build-service-rs/open-build-service-api/." }
+oscrc = { path = "../open-build-service-rs/oscrc" }
+
+[dev-dependencies]
+claim = "0.5"
+
+gitlab-runner-mock = { git = "https://github.com/collabora/gitlab-runner-rs" }
+open-build-service-mock = { path = "../open-build-service-rs/open-build-service-mock" }
+

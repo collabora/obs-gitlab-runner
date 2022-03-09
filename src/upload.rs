@@ -184,6 +184,7 @@ impl ObsUploader {
         filename: &str,
         artifacts: &impl ArtifactDirectory,
     ) -> Result<()> {
+        debug!("Uploading file");
         let file = artifacts.get_file(root.join(filename).as_str()).await?;
 
         self.client
@@ -731,21 +732,7 @@ mod tests {
                 .upload_package(dsc4_file, Some(&branched_project), &artifacts)
                 .await
         );
-        eprintln!(
-            "{}",
-            String::from_utf8_lossy(
-                &collect_byte_stream(
-                    client
-                        .project(branched_project.clone())
-                        .package(TEST_PACKAGE_1.to_owned())
-                        .source_file("_meta")
-                        .await
-                        .unwrap()
-                )
-                .await
-                .unwrap()
-            )
-        );
+        assert_eq!(result.project, branched_project);
         // TODO: check the revision, once the mock APIs have branches
         // incorporate the origin's history
         assert!(!result.unchanged);

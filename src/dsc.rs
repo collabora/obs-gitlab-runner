@@ -109,7 +109,6 @@ Files:
 
     #[test]
     fn test_de() {
-        println!("dsc: {}", TEST_DSC);
         let dsc: Dsc = assert_ok!(rfc822_like::from_str(TEST_DSC));
 
         assert_eq!(dsc.source, "abc");

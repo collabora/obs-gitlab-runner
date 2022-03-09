@@ -249,7 +249,7 @@ impl ObsJobHandler {
                 let logs = monitor.get_logs_tail(LOG_TAIL_2MB).await?;
 
                 self.job
-                    .trace(logs + "{}\n\n(last 2MB of logs printed above)");
+                    .trace(logs + "\n\n(last 2MB of logs printed above)");
                 outputln!("Build failed with reason '{:?}'", reason);
             }
         }

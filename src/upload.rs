@@ -344,8 +344,6 @@ impl ObsUploader {
                 false,
             )
         } else {
-            // No changes, so don't bother committing. TODO: rebuildpac
-
             // SAFETY: .unwrap() would only fail if the revision is unset, which
             // would only happen if this were the *empty* zero revision. Because
             // we always try to add the _meta file, our files to commit is

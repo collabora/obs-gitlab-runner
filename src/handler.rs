@@ -138,8 +138,14 @@ impl ObsJobHandler {
 
         if result.unchanged {
             outputln!("Package unchanged at revision {}", result.rev);
-            // TODO: trigger rebuild
+
             // TODO: control rebuild triggers via flag
+            self.client
+                .project(result.project.clone())
+                .package(result.package.clone())
+                .rebuild()
+                .await
+                .wrap_err("Failed to trigger rebuild")?;
         } else {
             outputln!("Package uploaded with revision {}", result.rev);
         }

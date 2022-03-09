@@ -69,6 +69,11 @@ mod tests {
 
         let mock = create_default_mock().await;
         mock.add_project(TEST_PROJECT.to_owned());
+        mock.add_new_package(
+            TEST_PROJECT,
+            TEST_PACKAGE_1.to_owned(),
+            MockPackageOptions::default(),
+        );
 
         mock.add_or_update_repository(
             TEST_PROJECT,

@@ -85,20 +85,15 @@ impl ObsUploader {
             ..Default::default()
         };
 
-        match self
+        let client_package = self
             .client
             .project(self.project.clone())
-            .package(package_name.to_owned())
-            .branch(&options)
-            .await
-        {
+            .package(package_name.to_owned());
+
+        match client_package.branch(&options).await {
             Err(obs::Error::ApiError(e)) if e.code == "not_missing" => {
                 options.missingok = false;
-                self.client
-                    .project(self.project.clone())
-                    .package(package_name.to_owned())
-                    .branch(&options)
-                    .await?;
+                client_package.branch(&options).await?;
             }
             result => {
                 result?;
@@ -113,28 +108,20 @@ impl ObsUploader {
         &self,
         project: &str,
         package: &str,
-    ) -> Result<obs::Directory> {
-        match self
+    ) -> Result<obs::SourceDirectory> {
+        let client_package = self
             .client
             .project(project.to_owned())
-            .package(package.to_owned())
-            .list(None)
-            .await
-        {
+            .package(package.to_owned());
+
+        match client_package.list(None).await {
             Ok(dir) => Ok(dir),
             Err(obs::Error::ApiError(obs::ApiError { code, .. })) if code == "unknown_package" => {
-                self.client
-                    .project(project.to_owned())
-                    .package(package.to_owned())
+                client_package
                     .create()
                     .await
                     .wrap_err("Failed to create missing package")?;
-                self.client
-                    .project(project.to_owned())
-                    .package(package.to_owned())
-                    .list(None)
-                    .await
-                    .map_err(|e| e.into())
+                client_package.list(None).await.map_err(|e| e.into())
             }
             Err(err) => return Err(err.into()),
         }
@@ -443,6 +430,9 @@ mod tests {
         );
 
         let client = create_default_client(&mock);
+        let package_1 = client
+            .project(TEST_PROJECT.to_owned())
+            .package(TEST_PACKAGE_1.to_owned());
         let uploader = ObsUploader::new(client.clone(), TEST_PROJECT.to_owned());
         let artifacts = MockArtifactDirectory {
             artifacts: [
@@ -465,13 +455,7 @@ mod tests {
                 .await
         );
 
-        let mut dir = assert_ok!(
-            client
-                .project(TEST_PROJECT.to_owned())
-                .package(TEST_PACKAGE_1.to_owned())
-                .list(None)
-                .await
-        );
+        let mut dir = assert_ok!(package_1.list(None).await);
         assert_eq!(dir.rev.as_deref(), Some("1"));
         assert_eq!(dir.entries.len(), 1);
         dir.entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -495,13 +479,7 @@ mod tests {
                 .await
         );
 
-        let mut dir = assert_ok!(
-            client
-                .project(TEST_PROJECT.to_owned())
-                .package(TEST_PACKAGE_1.to_owned())
-                .list(None)
-                .await
-        );
+        let mut dir = assert_ok!(package_1.list(None).await);
         assert_eq!(dir.rev.as_deref(), Some("2"));
         assert_eq!(dir.entries.len(), 2);
         dir.entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -510,13 +488,7 @@ mod tests {
         assert_eq!(dir.entries[1].name, test2_file);
         assert_eq!(dir.entries[1].md5, test2_md5);
 
-        let revisions = assert_ok!(
-            client
-                .project(TEST_PROJECT.to_owned())
-                .package(TEST_PACKAGE_1.to_owned())
-                .revisions()
-                .await
-        );
+        let revisions = assert_ok!(package_1.revisions().await);
         let rev = assert_some!(revisions.revisions.last());
         assert_eq!(rev.comment.as_deref(), Some(test_message));
 
@@ -533,13 +505,7 @@ mod tests {
                 .await
         );
 
-        let mut dir = assert_ok!(
-            client
-                .project(TEST_PROJECT.to_owned())
-                .package(TEST_PACKAGE_1.to_owned())
-                .list(None)
-                .await
-        );
+        let mut dir = assert_ok!(package_1.list(None).await);
         assert_eq!(dir.rev.as_deref(), Some("3"));
         assert_eq!(dir.entries.len(), 1);
         dir.entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -613,6 +579,9 @@ mod tests {
         mock.add_project(TEST_PROJECT.to_owned());
 
         let client = create_default_client(&mock);
+        let package_1 = client
+            .project(TEST_PROJECT.to_owned())
+            .package(TEST_PACKAGE_1.to_owned());
         let uploader = ObsUploader::new(client.clone(), TEST_PROJECT.to_owned());
         let mut artifacts = MockArtifactDirectory {
             artifacts: [
@@ -650,13 +619,7 @@ mod tests {
         assert_eq!(result.rev, "1");
         assert!(!result.unchanged);
 
-        let mut dir = assert_ok!(
-            client
-                .project(TEST_PROJECT.to_owned())
-                .package(TEST_PACKAGE_1.to_owned())
-                .list(None)
-                .await
-        );
+        let mut dir = assert_ok!(package_1.list(None).await);
         assert_eq!(dir.rev.as_deref(), Some("1"));
         assert_eq!(dir.entries.len(), 3);
         dir.entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -666,13 +629,7 @@ mod tests {
         assert_eq!(dir.entries[2].name, test1_file);
         assert_eq!(dir.entries[2].md5, test1_md5_a);
 
-        let revisions = assert_ok!(
-            client
-                .project(TEST_PROJECT.to_owned())
-                .package(TEST_PACKAGE_1.to_owned())
-                .revisions()
-                .await
-        );
+        let revisions = assert_ok!(package_1.revisions().await);
         let revision = assert_some!(revisions.revisions.last());
         assert_eq!(
             revision.comment.as_deref(),
@@ -682,17 +639,13 @@ mod tests {
         // Add a new file & a pre-existing file (that should be kept).
 
         assert_ok!(
-            client
-                .project(TEST_PROJECT.to_owned())
-                .package(TEST_PACKAGE_1.to_owned())
+            package_1
                 .upload_for_commit(already_present_file, already_present_contents.to_vec())
                 .await
         );
 
         assert_ok!(
-            client
-                .project(TEST_PROJECT.to_owned())
-                .package(TEST_PACKAGE_1.to_owned())
+            package_1
                 .commit(
                     &obs::CommitFileList::new().file_md5(
                         already_present_file.to_owned(),
@@ -707,13 +660,7 @@ mod tests {
         assert_eq!(result.rev, "3");
         assert!(!result.unchanged);
 
-        let mut dir = assert_ok!(
-            client
-                .project(TEST_PROJECT.to_owned())
-                .package(TEST_PACKAGE_1.to_owned())
-                .list(None)
-                .await
-        );
+        let mut dir = assert_ok!(package_1.list(None).await);
         assert_eq!(dir.rev.as_deref(), Some("3"));
         assert_eq!(dir.entries.len(), 5);
         dir.entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -738,13 +685,7 @@ mod tests {
         assert_eq!(result.rev, "4");
         assert!(!result.unchanged);
 
-        let mut dir = assert_ok!(
-            client
-                .project(TEST_PROJECT.to_owned())
-                .package(TEST_PACKAGE_1.to_owned())
-                .list(None)
-                .await
-        );
+        let mut dir = assert_ok!(package_1.list(None).await);
         assert_eq!(dir.rev.as_deref(), Some("4"));
         assert_eq!(dir.entries.len(), 5);
         dir.entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -764,13 +705,7 @@ mod tests {
         assert_eq!(result.rev, "5");
         assert!(!result.unchanged);
 
-        let mut dir = assert_ok!(
-            client
-                .project(TEST_PROJECT.to_owned())
-                .package(TEST_PACKAGE_1.to_owned())
-                .list(None)
-                .await
-        );
+        let mut dir = assert_ok!(package_1.list(None).await);
         assert_eq!(dir.rev.as_deref(), Some("5"));
         assert_eq!(dir.entries.len(), 4);
         dir.entries.sort_by(|a, b| a.name.cmp(&b.name));

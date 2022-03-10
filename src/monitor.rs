@@ -1,11 +1,15 @@
 use std::time::Duration;
 
-use color_eyre::eyre::{ensure, eyre, Result};
+use color_eyre::eyre::{ensure, eyre, Context, Result};
 use derivative::*;
 use futures_util::stream::StreamExt;
 use gitlab_runner::outputln;
 use open_build_service_api as obs;
-use tracing::{debug, error, instrument};
+use tokio::{
+    fs::File as AsyncFile,
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+};
+use tracing::instrument;
 
 #[derive(Debug)]
 pub enum PackageCompletion {
@@ -20,6 +24,12 @@ enum PackageBuildState {
     Building,
     Dirty,
     Completed(PackageCompletion),
+}
+
+#[derive(Debug)]
+pub struct LogFile {
+    pub file: AsyncFile,
+    pub len: u64,
 }
 
 // TODO: do we need this?
@@ -138,7 +148,7 @@ impl ObsMonitor {
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, content))]
     fn check_log_md5(&self, content: &str) -> Result<()> {
         let needle = format!("srcmd5 '{}'", self.srcmd5);
         ensure!(
@@ -147,80 +157,6 @@ impl ObsMonitor {
         );
 
         Ok(())
-    }
-
-    #[instrument(skip(self))]
-    async fn download_logs(
-        &self,
-        offset: usize,
-        end: usize,
-        ignore_error_if_some_logs_present: bool,
-    ) -> Result<String> {
-        debug!("Downloading...");
-
-        let mut stream = self
-            .client
-            .project(self.project.clone())
-            .package(self.package.clone())
-            .log(&self.repository, &self.arch)
-            .stream(obs::PackageLogStreamOptions {
-                offset: Some(offset),
-                end: Some(end),
-            })?;
-
-        let mut logs = "".to_owned();
-        logs.reserve(end - offset);
-
-        while let Some(bytes) = stream.next().await {
-            match bytes {
-                Ok(bytes) => logs.push_str(&String::from_utf8_lossy(&bytes)),
-                Err(err) => {
-                    error!("Error reading logs: {:?}", err);
-                    if ignore_error_if_some_logs_present && !logs.is_empty() {
-                        break;
-                    } else {
-                        return Err(eyre!(err));
-                    }
-                }
-            }
-        }
-
-        Ok(logs)
-    }
-
-    #[instrument]
-    pub async fn get_logs_tail(&self, limit: usize) -> Result<String> {
-        const LOG_LEN_TO_CHECK_FOR_MD5: usize = 2500;
-
-        let (total_size, _) = self
-            .client
-            .project(self.project.clone())
-            .package(self.package.clone())
-            .log(&self.repository, &self.arch)
-            .entry()
-            .await?;
-
-        let download_entire_log = total_size <= limit;
-
-        let offset = if download_entire_log {
-            0
-        } else {
-            total_size - limit
-        };
-        let logs = self.download_logs(offset, total_size, true).await?;
-
-        // If we already downloaded the start of the logs, just check there for
-        // the MD5, otherwise download the head and check it.
-        if offset == 0 && (download_entire_log || limit >= LOG_LEN_TO_CHECK_FOR_MD5) {
-            self.check_log_md5(&logs)?;
-        } else {
-            let head = self
-                .download_logs(0, LOG_LEN_TO_CHECK_FOR_MD5, false)
-                .await?;
-            self.check_log_md5(&head)?;
-        }
-
-        Ok(logs)
     }
 
     #[instrument]
@@ -245,6 +181,43 @@ impl ObsMonitor {
                 }
             }
         }
+    }
+
+    #[instrument]
+    pub async fn download_build_log(&self) -> Result<LogFile> {
+        const LOG_LEN_TO_CHECK_FOR_MD5: u64 = 2500;
+
+        let mut file = AsyncFile::from_std(
+            tempfile::tempfile().wrap_err("Failed to create tempfile to build log")?,
+        );
+        let mut stream = self
+            .client
+            .project(self.project.clone())
+            .package(self.package.clone())
+            .log(&self.repository, &self.arch)
+            .stream(obs::PackageLogStreamOptions::default())?;
+
+        while let Some(bytes) = stream.next().await {
+            let bytes = bytes?;
+            file.write_all(&bytes)
+                .await
+                .wrap_err("Failed to download build log")?;
+        }
+
+        let len = file
+            .stream_position()
+            .await
+            .wrap_err("Failed to find stream position")?;
+        file.rewind().await.wrap_err("Failed to rewind file")?;
+
+        let mut buf = vec![0; std::cmp::min(LOG_LEN_TO_CHECK_FOR_MD5, len) as usize];
+        file.read_exact(&mut buf)
+            .await
+            .wrap_err("Failed to read start of logs")?;
+        self.check_log_md5(&String::from_utf8_lossy(&buf))?;
+
+        file.rewind().await.wrap_err("Failed to rewind file")?;
+        Ok(LogFile { file, len })
     }
 }
 
@@ -332,12 +305,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_logs() {
+    async fn test_download_log() {
         let srcmd5 = random_md5();
         let log_content = format!(
             "srcmd5 '{}'\n
                 some random logs are here
-                ten characters: 0123456789",
+                testing 123 456",
             srcmd5
         );
 
@@ -389,10 +362,12 @@ mod tests {
             .await
         );
 
-        let logs = assert_ok!(monitor.get_logs_tail(10).await);
-        assert_eq!(logs, "0123456789");
-        let logs = assert_ok!(monitor.get_logs_tail(log_content.len()).await);
-        assert_eq!(logs, log_content);
+        let mut log_file = assert_ok!(monitor.download_build_log().await);
+        assert_eq!(log_file.len, log_content.len() as u64);
+
+        let mut log = "".to_owned();
+        assert_ok!(log_file.file.read_to_string(&mut log).await);
+        assert_eq!(log, log_content);
 
         let new_srcmd5 = random_md5();
         let log_content = log_content.replace(&srcmd5, &new_srcmd5);
@@ -406,7 +381,8 @@ mod tests {
             true,
         );
 
-        assert_err!(monitor.get_logs_tail(10).await);
+        let err = assert_err!(monitor.download_build_log().await);
+        assert!(err.to_string().contains("unavailable"));
     }
 
     #[tokio::test]

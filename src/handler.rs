@@ -2,17 +2,19 @@ use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     fs::File,
+    io::SeekFrom,
 };
 
 use async_trait::async_trait;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::{Context, Result};
+use futures_util::StreamExt;
 use gitlab_runner::{job::Job, outputln, uploader::Uploader, JobHandler, JobResult, Phase};
 use open_build_service_api as obs;
 use serde::{Deserialize, Serialize};
 use tokio::{fs::File as AsyncFile, io::AsyncSeekExt};
-use tokio_util::compat::FuturesAsyncWriteCompatExt;
+use tokio_util::{compat::FuturesAsyncWriteCompatExt, io::ReaderStream};
 use tracing::{debug, error, instrument};
 
 use crate::{
@@ -27,6 +29,7 @@ const DEFAULT_BUILD_INFO: &str = "build-info.json";
 const DEFAULT_MONITOR_PIPELINE: &str = "obs-monitor.yml";
 const DEFAULT_PIPELINE_JOB_PREFIX: &str = "obs";
 const DEFAULT_BUILD_RESULTS_DIR: &str = "results";
+const DEFAULT_BUILD_LOG: &str = "build.log";
 
 #[derive(Parser, Debug)]
 struct UploadAction {
@@ -50,6 +53,8 @@ struct GenerateMonitorAction {
     job_prefix: String,
     #[clap(long, default_value_t = DEFAULT_BUILD_RESULTS_DIR.into())]
     build_results_dir: Utf8PathBuf,
+    #[clap(long, default_value_t = DEFAULT_BUILD_LOG.into())]
+    build_log_out: String,
 }
 
 #[derive(Parser, Debug)]
@@ -60,6 +65,8 @@ struct MonitorAction {
     build_info: String,
     #[clap(long, default_value_t = DEFAULT_BUILD_RESULTS_DIR.into())]
     build_results_dir: Utf8PathBuf,
+    #[clap(long, default_value_t = DEFAULT_BUILD_LOG.into())]
+    build_log_out: String,
 }
 
 #[derive(Subcommand)]
@@ -196,7 +203,7 @@ impl ObsJobHandler {
 
     #[instrument(skip(self))]
     async fn run_monitor(&mut self, args: MonitorAction) -> Result<()> {
-        const LOG_TAIL_2MB: usize = 2 * 1024 * 1024;
+        const LOG_TAIL_2MB: u64 = 2 * 1024 * 1024;
 
         let build_info_data = self.get_data(&args.build_info).await?;
         let build_info: ObsBuildInfo = serde_json::from_slice(&build_info_data[..])
@@ -216,6 +223,16 @@ impl ObsJobHandler {
             .monitor_package(PackageMonitoringOptions::default())
             .await?;
         debug!("Completed with: {:?}", completion);
+
+        let mut log_file = monitor.download_build_log().await?;
+        self.artifacts.insert(
+            args.build_log_out,
+            log_file
+                .file
+                .try_clone()
+                .await
+                .wrap_err("Failed to clone log file")?,
+        );
 
         match completion {
             PackageCompletion::Succeeded => {
@@ -246,10 +263,21 @@ impl ObsJobHandler {
                 outputln!("Package is disabled for this architecture");
             }
             PackageCompletion::Failed(reason) => {
-                let logs = monitor.get_logs_tail(LOG_TAIL_2MB).await?;
+                log_file
+                    .file
+                    .seek(SeekFrom::End(
+                        -(std::cmp::min(LOG_TAIL_2MB, log_file.len) as i64),
+                    ))
+                    .await
+                    .wrap_err("Failed to find length of log file")?;
 
-                self.job
-                    .trace(logs + "\n\n(last 2MB of logs printed above)");
+                let mut log_stream = ReaderStream::new(log_file.file);
+                while let Some(bytes) = log_stream.next().await {
+                    let bytes = bytes.wrap_err("Failed to stream log bytes")?;
+                    self.job.trace(String::from_utf8_lossy(&bytes).as_ref());
+                }
+
+                self.job.trace("\n\n(last <=2MB of logs printed above)\n");
                 outputln!("Build failed with reason '{:?}'", reason);
             }
         }

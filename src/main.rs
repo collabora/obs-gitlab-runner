@@ -13,6 +13,7 @@ use crate::handler::ObsJobHandler;
 
 mod artifacts;
 mod binaries;
+mod cleanup;
 mod dsc;
 mod handler;
 mod monitor;

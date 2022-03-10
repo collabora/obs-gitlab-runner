@@ -20,6 +20,7 @@ use tracing::{debug, error, instrument};
 use crate::{
     artifacts::{save_to_tempfile, ArtifactDirectory},
     binaries::download_binaries,
+    cleanup::cleanup_branch,
     monitor::{ObsMonitor, PackageCompletion, PackageMonitoringOptions},
     pipeline::{generate_monitor_pipeline, GeneratePipelineOptions},
     upload::ObsUploader,
@@ -69,11 +70,22 @@ struct MonitorAction {
     build_log_out: String,
 }
 
+#[derive(Parser, Debug)]
+struct CleanupAction {
+    #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned())]
+    build_info: String,
+    #[clap(long)]
+    ignore_missing_build_info: bool,
+    #[clap(long)]
+    only_if_job_unsuccessful: bool,
+}
+
 #[derive(Subcommand)]
 enum Action {
     Upload(UploadAction),
     GenerateMonitor(GenerateMonitorAction),
     Monitor(MonitorAction),
+    Cleanup(CleanupAction),
 }
 
 #[derive(Parser)]
@@ -87,12 +99,14 @@ struct ObsBuildInfo {
     project: String,
     package: String,
     rev: String,
+    is_branched: bool,
 }
 
 pub struct ObsJobHandler {
     job: Job,
     client: obs::Client,
 
+    script_failed: bool,
     artifacts: HashMap<String, AsyncFile>,
 }
 
@@ -101,6 +115,7 @@ impl ObsJobHandler {
         ObsJobHandler {
             job,
             client,
+            script_failed: false,
             artifacts: HashMap::new(),
         }
     }
@@ -163,6 +178,7 @@ impl ObsJobHandler {
             project: result.project,
             package: result.package,
             rev: result.rev,
+            is_branched: branch_to.is_some(),
         };
 
         let mut build_info_file =
@@ -286,6 +302,50 @@ impl ObsJobHandler {
     }
 
     #[instrument(skip(self))]
+    async fn run_cleanup(&mut self, args: CleanupAction) -> Result<()> {
+        if args.only_if_job_unsuccessful && !self.script_failed {
+            outputln!("Skipping cleanup: main script was successful");
+            return Ok(());
+        }
+
+        let build_info_data = if args.ignore_missing_build_info {
+            if let Some(build_info_data) = self.get_data_or_none(&args.build_info).await? {
+                build_info_data
+            } else {
+                outputln!(
+                    "Skipping cleanup: build info file '{}' not found",
+                    args.build_info
+                );
+                return Ok(());
+            }
+        } else {
+            self.get_data(&args.build_info).await?
+        };
+
+        let build_info: ObsBuildInfo = serde_json::from_slice(&build_info_data[..])
+            .wrap_err("Failed to parse provided build info file")?;
+
+        if build_info.is_branched {
+            outputln!(
+                "Cleaning up branched package {}/{}",
+                build_info.project,
+                build_info.package
+            );
+            cleanup_branch(
+                &self.client,
+                &build_info.project,
+                &build_info.package,
+                &build_info.rev,
+            )
+            .await?;
+        } else {
+            outputln!("Skipping cleanup: package was not branched");
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
     async fn command(&mut self, cmdline: &str) -> Result<()> {
         // TODO: inject user?
         let cmdline = self.expand_vars(cmdline, true, &mut HashSet::new());
@@ -301,6 +361,7 @@ impl ObsJobHandler {
             Action::Upload(args) => self.run_upload(args).await?,
             Action::GenerateMonitor(args) => self.run_generate_monitor(args).await?,
             Action::Monitor(args) => self.run_monitor(args).await?,
+            Action::Cleanup(args) => self.run_cleanup(args).await?,
         }
 
         Ok(())
@@ -328,6 +389,7 @@ impl JobHandler for ObsJobHandler {
     async fn step(&mut self, script: &[String], _phase: Phase) -> JobResult {
         for command in script {
             if let Err(err) = self.command(command).await {
+                self.script_failed = true;
                 error!(gitlab.output = true, "Error running command: {:?}", err);
                 return Err(());
             }

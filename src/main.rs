@@ -91,7 +91,6 @@ async fn main() {
                 .event_format(tracing_subscriber::fmt::format().pretty())
                 .with_filter(args.log.targets),
         )
-        // TODO: this doesn't actually log to gitlab for some reason?
         .init();
 
     color_eyre::install().unwrap();

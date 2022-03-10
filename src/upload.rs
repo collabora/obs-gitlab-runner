@@ -277,7 +277,7 @@ impl ObsUploader {
 
         let project = if let Some(branch_to) = branch_to {
             outputln!(
-                "Branching {}/{} -> {}/{}",
+                "Branching {}/{} -> {}/{}...",
                 self.project,
                 dsc.source,
                 branch_to,
@@ -289,7 +289,12 @@ impl ObsUploader {
             &self.project
         };
 
-        outputln!("Upload {} to {}/{}", dsc_filename, project, dsc.source);
+        outputln!(
+            "Uploading {} to {}/{}...",
+            dsc_filename,
+            project,
+            dsc.source
+        );
 
         let dir = self
             .ensure_package_exists_and_list(project, &dsc.source)

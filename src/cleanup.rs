@@ -38,6 +38,8 @@ pub async fn cleanup_branch(
         .await
         .wrap_err("Failed to delete package")?;
 
+    outputln!("Deleted package {}/{}.", project, package);
+
     let packages = client
         .project(project.to_owned())
         .list_packages()
@@ -50,8 +52,9 @@ pub async fn cleanup_branch(
             .delete()
             .await
             .wrap_err("Failed to delete project")?;
+        outputln!("Deleted empty project {}.", project);
     } else {
-        outputln!("Project has other packages, skipping deletion");
+        outputln!("Project has other packages, skipping deletion.");
     }
 
     Ok(())

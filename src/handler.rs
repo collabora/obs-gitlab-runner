@@ -159,7 +159,7 @@ impl ObsJobHandler {
             .await?;
 
         if result.unchanged {
-            outputln!("Package unchanged at revision {}", result.rev);
+            outputln!("Package unchanged at revision {}.", result.rev);
 
             // TODO: control rebuild triggers via flag
             self.client
@@ -169,7 +169,7 @@ impl ObsJobHandler {
                 .await
                 .wrap_err("Failed to trigger rebuild")?;
         } else {
-            outputln!("Package uploaded with revision {}", result.rev);
+            outputln!("Package uploaded with revision {}.", result.rev);
         }
 
         // TODO: filter out disabled repos (technically we can just catch those
@@ -212,7 +212,7 @@ impl ObsJobHandler {
         self.artifacts
             .insert(args.pipeline_out.clone(), AsyncFile::from_std(file));
 
-        outputln!("Wrote {}", args.pipeline_out);
+        outputln!("Wrote pipeline file '{}'.", args.pipeline_out);
 
         Ok(())
     }
@@ -273,10 +273,10 @@ impl ObsJobHandler {
                 outputln!("Downloaded {} artifact(s).", binary_count);
             }
             PackageCompletion::Superceded => {
-                outputln!("Build was superceded by a newer revision");
+                outputln!("Build was superceded by a newer revision.");
             }
             PackageCompletion::Disabled => {
-                outputln!("Package is disabled for this architecture");
+                outputln!("Package is disabled for this architecture.");
             }
             PackageCompletion::Failed(reason) => {
                 log_file
@@ -294,7 +294,7 @@ impl ObsJobHandler {
                 }
 
                 self.job.trace("\n\n(last <=2MB of logs printed above)\n");
-                outputln!("Build failed with reason '{:?}'", reason);
+                outputln!("Build failed with reason '{:?}'.", reason);
             }
         }
 
@@ -304,7 +304,7 @@ impl ObsJobHandler {
     #[instrument(skip(self))]
     async fn run_cleanup(&mut self, args: CleanupAction) -> Result<()> {
         if args.only_if_job_unsuccessful && !self.script_failed {
-            outputln!("Skipping cleanup: main script was successful");
+            outputln!("Skipping cleanup: main script was successful.");
             return Ok(());
         }
 
@@ -313,7 +313,7 @@ impl ObsJobHandler {
                 build_info_data
             } else {
                 outputln!(
-                    "Skipping cleanup: build info file '{}' not found",
+                    "Skipping cleanup: build info file '{}' not found.",
                     args.build_info
                 );
                 return Ok(());
@@ -327,7 +327,7 @@ impl ObsJobHandler {
 
         if build_info.is_branched {
             outputln!(
-                "Cleaning up branched package {}/{}",
+                "Cleaning up branched package {}/{}...",
                 build_info.project,
                 build_info.package
             );
@@ -339,7 +339,7 @@ impl ObsJobHandler {
             )
             .await?;
         } else {
-            outputln!("Skipping cleanup: package was not branched");
+            outputln!("Skipping cleanup: package was not branched.");
         }
 
         Ok(())

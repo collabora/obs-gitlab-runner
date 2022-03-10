@@ -164,12 +164,23 @@ impl ObsMonitor {
         &self,
         options: PackageMonitoringOptions,
     ) -> Result<PackageCompletion> {
-        // TODO: show log url
+        let mut log_url = self.client.url().clone();
+        log_url
+            .path_segments_mut()
+            .map_err(|_| eyre!("Failed to modify log URL"))?
+            .push("package")
+            .push("live_build_log")
+            .push(&self.project)
+            .push(&self.package)
+            .push(&self.repository)
+            .push(&self.arch);
+
+        outputln!("Live build log: {}", log_url);
+        outputln!("Monitoring build...");
 
         loop {
             match self.get_latest_state().await? {
                 PackageBuildState::Building => {
-                    outputln!("Still building");
                     tokio::time::sleep(options.sleep_on_building).await;
                 }
                 PackageBuildState::Dirty => {

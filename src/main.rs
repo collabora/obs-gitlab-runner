@@ -9,7 +9,7 @@ use tracing::{error, info, instrument};
 use tracing_subscriber::{filter::targets::Targets, prelude::*, util::SubscriberInitExt, Layer};
 use url::Url;
 
-use crate::handler::ObsJobHandler;
+use crate::handler::{HandlerOptions, ObsJobHandler};
 
 mod artifacts;
 mod binaries;
@@ -100,7 +100,7 @@ async fn main() {
         .run(
             |job| async {
                 match create_obs_client(&job) {
-                    Ok(client) => Ok(ObsJobHandler::new(job, client)),
+                    Ok(client) => Ok(ObsJobHandler::new(job, client, HandlerOptions::default())),
                     Err(err) => {
                         error!("Failed to create new client: {:?}", err);
                         Err(())

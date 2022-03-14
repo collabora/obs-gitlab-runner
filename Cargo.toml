@@ -37,7 +37,10 @@ oscrc = { path = "../open-build-service-rs/oscrc" }
 
 [dev-dependencies]
 claim = "0.5"
+rstest = "0.12"
+zip = "0.5"
 
-gitlab-runner-mock = { git = "https://github.com/collabora/gitlab-runner-rs" }
+# gitlab-runner-mock = { git = "https://github.com/collabora/gitlab-runner-rs" }
+gitlab-runner-mock = { path = "../gitlab-runner-rs/gitlab-runner-mock" }
 open-build-service-mock = { path = "../open-build-service-rs/open-build-service-mock" }
 

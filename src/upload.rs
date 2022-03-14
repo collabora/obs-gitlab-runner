@@ -29,7 +29,7 @@ async fn collect_byte_stream<E: std::error::Error + Send + Sync + 'static>(
     Ok(data)
 }
 
-fn compute_md5(data: &[u8]) -> String {
+pub fn compute_md5(data: &[u8]) -> String {
     base16ct::lower::encode_string(&Md5::digest(data))
 }
 

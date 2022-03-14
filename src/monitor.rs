@@ -32,11 +32,10 @@ pub struct LogFile {
     pub len: u64,
 }
 
-// TODO: do we need this?
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct PackageMonitoringOptions {
-    sleep_on_building: Duration,
-    sleep_on_dirty: Duration,
+    pub sleep_on_building: Duration,
+    pub sleep_on_dirty: Duration,
 }
 
 impl Default for PackageMonitoringOptions {

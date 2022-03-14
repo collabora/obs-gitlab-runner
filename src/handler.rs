@@ -117,6 +117,17 @@ struct ObsBuildInfo {
     is_branched: bool,
 }
 
+#[derive(Debug)]
+struct FailedBuild;
+
+impl std::fmt::Display for FailedBuild {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for FailedBuild {}
+
 const LOG_TAIL_2MB: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, Derivative)]
@@ -267,7 +278,7 @@ impl ObsJobHandler {
 
         let mut log_file = monitor.download_build_log().await?;
         self.artifacts.insert(
-            args.build_log_out,
+            args.build_log_out.clone(),
             log_file
                 .file
                 .try_clone()
@@ -320,6 +331,12 @@ impl ObsJobHandler {
 
                 self.job.trace("\n\n(last <=2MB of logs printed above)\n");
                 outputln!("Build failed with reason '{:?}'.", reason);
+                outputln!("The last 2MB of the build log is printed above.");
+                outputln!(
+                    "(Full logs are available in the build artifact '{}'.)",
+                    args.build_log_out
+                );
+                return Err(FailedBuild.into());
             }
         }
 
@@ -419,8 +436,13 @@ impl JobHandler for ObsJobHandler {
     async fn step(&mut self, script: &[String], _phase: Phase) -> JobResult {
         for command in script {
             if let Err(err) = self.command(command).await {
+                // Failed builds would already have information on them printed
+                // above, so don't print anything on them again.
+                if !err.is::<FailedBuild>() {
+                    error!(gitlab.output = true, "Error running command: {:?}", err);
+                }
+
                 self.script_failed = true;
-                error!(gitlab.output = true, "Error running command: {:?}", err);
                 return Err(());
             }
         }
@@ -611,7 +633,15 @@ mod tests {
             );
         }
 
-        builder.add_artifact_paths(vec!["*".to_owned()]);
+        builder.add_artifact(
+            None,
+            false,
+            vec!["*".to_owned()],
+            Some(MockJobArtifactWhen::Always),
+            "archive".to_owned(),
+            Some("zip".to_owned()),
+            None,
+        );
 
         for dependency in spec.dependencies {
             builder.dependency(dependency);
@@ -1029,8 +1059,7 @@ mod tests {
         run_obs_handler(context).await;
         assert_eq!(
             monitor.state(),
-            // TODO: fix failed jobs returning a success code
-            if (success || true) && log_test != MonitorLogTest::Unavailable {
+            if success && log_test != MonitorLogTest::Unavailable {
                 MockJobState::Success
             } else {
                 MockJobState::Failed

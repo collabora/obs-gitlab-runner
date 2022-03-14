@@ -102,6 +102,8 @@ enum Action {
 }
 
 #[derive(Parser)]
+#[clap(bin_name = "obs-gitlab-runner")]
+#[clap(no_binary_name = true)]
 struct Command {
     #[clap(subcommand)]
     action: Action,
@@ -375,9 +377,7 @@ impl ObsJobHandler {
 
         outputln!("> {}", cmdline);
 
-        let mut args = shell_words::split(&cmdline).wrap_err("Invalid command line")?;
-        // Insert the "program name" at argv[0].
-        args.insert(0, "obs-gitlab-runner".to_owned());
+        let args = shell_words::split(&cmdline).wrap_err("Invalid command line")?;
         let command = Command::try_parse_from(args)?;
 
         match command.action {

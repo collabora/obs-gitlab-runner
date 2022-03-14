@@ -501,9 +501,10 @@ mod tests {
         cmp::Ordering,
         io::{Cursor, Read},
         sync::Once,
-        time::Duration,
+        time::{Duration, SystemTime},
     };
 
+    use camino::Utf8Path;
     use claim::*;
     use futures_util::{AsyncWriteExt, Future};
     use gitlab_runner::{GitlabLayer, Runner};
@@ -879,6 +880,9 @@ mod tests {
         success: bool,
         log_test: MonitorLogTest,
     ) {
+        const TEST_BUILD_RESULT: &str = "test-build-result";
+        const TEST_BUILD_RESULT_CONTENTS: &[u8] = b"abcdef";
+
         let srcmd5_prefix = format!(
             "srcmd5 '{}' ",
             if log_test == MonitorLogTest::Unavailable {
@@ -939,6 +943,20 @@ mod tests {
             TEST_PACKAGE_1.to_owned(),
             MockBuildLog::new(log_contents.to_owned()),
             success,
+        );
+        context.obs_mock.set_package_binaries(
+            &build_info.project,
+            TEST_REPO,
+            TEST_ARCH_1,
+            TEST_PACKAGE_1.to_owned(),
+            [(
+                TEST_BUILD_RESULT.to_owned(),
+                MockBinary {
+                    contents: TEST_BUILD_RESULT_CONTENTS.to_vec(),
+                    mtime: SystemTime::now(),
+                },
+            )]
+            .into(),
         );
 
         let generate = enqueue_job(
@@ -1038,9 +1056,20 @@ mod tests {
 
         if log_test != MonitorLogTest::Unavailable {
             let results = get_job_artifacts(&monitor);
-            let full_log = results.get(DEFAULT_BUILD_LOG).unwrap();
 
+            let full_log = results.get(DEFAULT_BUILD_LOG).unwrap();
             assert_eq!(log_contents, String::from_utf8_lossy(full_log));
+
+            if success {
+                let build_result = results
+                    .get(
+                        Utf8Path::new(DEFAULT_BUILD_RESULTS_DIR)
+                            .join(TEST_BUILD_RESULT)
+                            .as_str(),
+                    )
+                    .unwrap();
+                assert_eq!(TEST_BUILD_RESULT_CONTENTS, &build_result[..]);
+            }
         }
     }
 

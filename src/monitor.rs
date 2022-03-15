@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use color_eyre::eyre::{ensure, eyre, Context, Result};
+use color_eyre::eyre::{ensure, eyre, Context, Report, Result};
 use derivative::*;
 use futures_util::stream::StreamExt;
 use gitlab_runner::outputln;
@@ -10,6 +10,8 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
 };
 use tracing::instrument;
+
+use crate::retry::{retry_large_request, retry_request};
 
 #[derive(Debug)]
 pub enum PackageCompletion {
@@ -71,11 +73,14 @@ impl ObsMonitor {
         arch: String,
         rev: String,
     ) -> Result<ObsMonitor> {
-        let dir = client
-            .project(project.clone())
-            .package(package.clone())
-            .list(Some(&rev))
-            .await?;
+        let dir = retry_request(|| async {
+            client
+                .project(project.clone())
+                .package(package.clone())
+                .list(Some(&rev))
+                .await
+        })
+        .await?;
 
         let srcmd5 = if let Some(link) = dir.linkinfo.into_iter().next() {
             link.xsrcmd5
@@ -96,12 +101,14 @@ impl ObsMonitor {
 
     #[instrument(skip(self))]
     async fn get_latest_revision(&self) -> Result<String> {
-        let dir = self
-            .client
-            .project(self.project.clone())
-            .package(self.package.clone())
-            .list(None)
-            .await?;
+        let dir = retry_request(|| async {
+            self.client
+                .project(self.project.clone())
+                .package(self.package.clone())
+                .list(None)
+                .await
+        })
+        .await?;
         dir.rev.ok_or_else(|| eyre!("Latest revision is 0"))
     }
 
@@ -112,12 +119,14 @@ impl ObsMonitor {
             return Ok(PackageBuildState::Completed(PackageCompletion::Superceded));
         }
 
-        let all_results = self
-            .client
-            .project(self.project.clone())
-            .package(self.package.clone())
-            .result()
-            .await?;
+        let all_results = retry_request(|| async {
+            self.client
+                .project(self.project.clone())
+                .package(self.package.clone())
+                .result()
+                .await
+        })
+        .await?;
 
         // TODO: filter this in the API call instead of afterwards
         let result = all_results
@@ -197,22 +206,27 @@ impl ObsMonitor {
     pub async fn download_build_log(&self) -> Result<LogFile> {
         const LOG_LEN_TO_CHECK_FOR_MD5: u64 = 2500;
 
-        let mut file = AsyncFile::from_std(
-            tempfile::tempfile().wrap_err("Failed to create tempfile to build log")?,
-        );
-        let mut stream = self
-            .client
-            .project(self.project.clone())
-            .package(self.package.clone())
-            .log(&self.repository, &self.arch)
-            .stream(obs::PackageLogStreamOptions::default())?;
+        let mut file = retry_large_request(|| async {
+            let mut file = AsyncFile::from_std(
+                tempfile::tempfile().wrap_err("Failed to create tempfile to build log")?,
+            );
+            let mut stream = self
+                .client
+                .project(self.project.clone())
+                .package(self.package.clone())
+                .log(&self.repository, &self.arch)
+                .stream(obs::PackageLogStreamOptions::default())?;
 
-        while let Some(bytes) = stream.next().await {
-            let bytes = bytes?;
-            file.write_all(&bytes)
-                .await
-                .wrap_err("Failed to download build log")?;
-        }
+            while let Some(bytes) = stream.next().await {
+                let bytes = bytes?;
+                file.write_all(&bytes)
+                    .await
+                    .wrap_err("Failed to download build log")?;
+            }
+
+            Ok::<AsyncFile, Report>(file)
+        })
+        .await?;
 
         let len = file
             .stream_position()

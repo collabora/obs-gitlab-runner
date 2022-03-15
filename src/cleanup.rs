@@ -3,6 +3,8 @@ use gitlab_runner::outputln;
 use open_build_service_api as obs;
 use tracing::info;
 
+use crate::retry::retry_request;
+
 #[tracing::instrument(skip(client))]
 pub async fn cleanup_branch(
     client: &obs::Client,
@@ -12,12 +14,15 @@ pub async fn cleanup_branch(
 ) -> Result<()> {
     // Do a sanity check to make sure this project & package are actually
     // linked (i.e. we're not going to be nuking the main repository).
-    let dir = client
-        .project(project.to_owned())
-        .package(package.to_owned())
-        .list(None)
-        .await
-        .wrap_err("Failed to list package")?;
+    let dir = retry_request(|| async {
+        client
+            .project(project.to_owned())
+            .package(package.to_owned())
+            .list(None)
+            .await
+    })
+    .await
+    .wrap_err("Failed to list package")?;
     ensure!(
         !dir.linkinfo.is_empty(),
         "Rejecting attempt to clean up a non-branched package"
@@ -31,25 +36,25 @@ pub async fn cleanup_branch(
         return Ok(());
     }
 
-    client
-        .project(project.to_owned())
-        .package(package.to_owned())
-        .delete()
-        .await
-        .wrap_err("Failed to delete package")?;
+    retry_request(|| async {
+        client
+            .project(project.to_owned())
+            .package(package.to_owned())
+            .delete()
+            .await
+    })
+    .await
+    .wrap_err("Failed to delete package")?;
 
     outputln!("Deleted package {}/{}.", project, package);
 
-    let packages = client
-        .project(project.to_owned())
-        .list_packages()
-        .await
-        .wrap_err("Failed to list packages in project")?
-        .entries;
+    let packages =
+        retry_request(|| async { client.project(project.to_owned()).list_packages().await })
+            .await
+            .wrap_err("Failed to list packages in project")?
+            .entries;
     if packages.is_empty() {
-        client
-            .project(project.to_owned())
-            .delete()
+        retry_request(|| async { client.project(project.to_owned()).delete().await })
             .await
             .wrap_err("Failed to delete project")?;
         outputln!("Deleted empty project {}.", project);

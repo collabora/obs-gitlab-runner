@@ -1,11 +1,13 @@
 use std::{collections::HashMap, io};
 
-use color_eyre::eyre::{Result, WrapErr};
+use color_eyre::eyre::{Report, Result, WrapErr};
 use futures_util::TryStreamExt;
 use open_build_service_api as obs;
 use tokio::{fs::File as AsyncFile, io::AsyncSeekExt};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::instrument;
+
+use crate::retry::{retry_large_request, retry_request};
 
 #[instrument(skip(client))]
 pub async fn download_binaries(
@@ -15,33 +17,46 @@ pub async fn download_binaries(
     repository: &str,
     arch: &str,
 ) -> Result<HashMap<String, AsyncFile>> {
-    let binary_list = client
-        .project(project.to_owned())
-        .package(package.to_owned())
-        .binaries(&repository, &arch)
-        .await?;
+    let binary_list = retry_request(|| async {
+        client
+            .project(project.to_owned())
+            .package(package.to_owned())
+            .binaries(&repository, &arch)
+            .await
+    })
+    .await?;
     let mut binaries = HashMap::new();
 
     for binary in binary_list.binaries {
         // TODO: span
-        let mut dest =
-            AsyncFile::from_std(tempfile::tempfile().wrap_err("Failed to create temporary file")?);
-        let stream = client
-            .project(project.to_owned())
-            .package(package.to_owned())
-            .binary_file(&repository, &arch, &binary.filename)
-            .await
-            .wrap_err("Failed to request file")?;
+        let mut dest = retry_large_request(|| {
+            let binary = binary.clone();
+            let client = client.clone();
+            async move {
+                let mut dest = AsyncFile::from_std(
+                    tempfile::tempfile().wrap_err("Failed to create temporary file")?,
+                );
 
-        tokio::io::copy(
-            &mut stream
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-                .into_async_read()
-                .compat(),
-            &mut dest,
-        )
-        .await
-        .wrap_err("Failed to download file")?;
+                let stream = client
+                    .project(project.to_owned())
+                    .package(package.to_owned())
+                    .binary_file(&repository, &arch, &binary.filename)
+                    .await
+                    .wrap_err("Failed to request file")?;
+
+                tokio::io::copy(
+                    &mut stream
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+                        .into_async_read()
+                        .compat(),
+                    &mut dest,
+                )
+                .await
+                .wrap_err("Failed to download file")?;
+                Ok::<AsyncFile, Report>(dest)
+            }
+        })
+        .await?;
 
         dest.rewind().await.wrap_err("Failed to rewind")?;
         binaries.insert(binary.filename, dest);

@@ -2,15 +2,19 @@ use std::collections::{HashMap, HashSet};
 
 use bytes::Bytes;
 use camino::Utf8Path;
-use color_eyre::eyre::{ensure, eyre, Context, Result};
+use color_eyre::eyre::{ensure, eyre, Context, Report, Result};
 use derivative::*;
-use futures_util::{Stream, TryStreamExt};
+use futures_util::{FutureExt, Stream, TryStreamExt};
 use gitlab_runner::outputln;
 use md5::{Digest, Md5};
 use open_build_service_api as obs;
 use tracing::{debug, instrument, trace};
 
-use crate::{artifacts::ArtifactDirectory, dsc::Dsc};
+use crate::{
+    artifacts::ArtifactDirectory,
+    dsc::Dsc,
+    retry::{retry_large_request, retry_request},
+};
 
 type Md5String = String;
 
@@ -90,13 +94,16 @@ impl ObsUploader {
             .project(self.project.clone())
             .package(package_name.to_owned());
 
-        match client_package.branch(&options).await {
-            Err(obs::Error::ApiError(e)) if e.code == "not_missing" => {
-                options.missingok = false;
-                client_package.branch(&options).await?;
-            }
-            result => {
-                result?;
+        let result = retry_request(|| async { client_package.branch(&options).await }).await;
+        if let Err(err) = result {
+            match err.downcast_ref::<obs::Error>() {
+                Some(obs::Error::ApiError(e)) if e.code == "not_missing" => {
+                    options.missingok = false;
+                    retry_request(|| async { client_package.branch(&options).await }).await?;
+                }
+                _ => {
+                    return Err(err);
+                }
             }
         }
 
@@ -117,10 +124,13 @@ impl ObsUploader {
         match client_package.list(None).await {
             Ok(dir) => Ok(dir),
             Err(obs::Error::ApiError(obs::ApiError { code, .. })) if code == "unknown_package" => {
-                client_package
-                    .create()
-                    .await
-                    .wrap_err("Failed to create missing package")?;
+                retry_request(|| async {
+                    client_package
+                        .create()
+                        .await
+                        .wrap_err("Failed to create missing package")
+                })
+                .await?;
                 client_package.list(None).await.map_err(|e| e.into())
             }
             Err(err) => return Err(err.into()),
@@ -141,13 +151,16 @@ impl ObsUploader {
                 to_remove.insert(file.clone());
 
                 // TODO: span with 'file' here
-                let contents = collect_byte_stream(
-                    self.client
-                        .project(project.to_owned())
-                        .package(package.to_owned())
-                        .source_file(file)
-                        .await?,
-                )
+                let contents = retry_request(|| async {
+                    collect_byte_stream(
+                        self.client
+                            .project(project.to_owned())
+                            .package(package.to_owned())
+                            .source_file(file)
+                            .await?,
+                    )
+                    .await
+                })
                 .await?;
                 let dsc: Dsc = rfc822_like::from_bytes(&contents[..])?;
                 to_remove.extend(dsc.files.into_iter().map(|f| f.filename));
@@ -161,12 +174,14 @@ impl ObsUploader {
 
     #[instrument(skip(self))]
     async fn get_latest_meta_md5(&self, project: &str, package: &str) -> Result<Md5String> {
-        let dir = self
-            .client
-            .project(project.to_owned())
-            .package(package.to_owned())
-            .list_meta(None)
-            .await?;
+        let dir = retry_request(|| async {
+            self.client
+                .project(project.to_owned())
+                .package(package.to_owned())
+                .list_meta(None)
+                .await
+        })
+        .await?;
         let meta = dir
             .entries
             .into_iter()
@@ -187,12 +202,19 @@ impl ObsUploader {
         debug!("Uploading file");
         let file = artifacts.get_file(root.join(filename).as_str()).await?;
 
-        self.client
-            .project(project.to_owned())
-            .package(package.to_owned())
-            .upload_for_commit(filename, file)
-            .await
-            .wrap_err("Failed to upload file")?;
+        retry_large_request(|| {
+            file.try_clone().then(|file| async {
+                let file = file.wrap_err("Failed to clone file")?;
+                self.client
+                    .project(project.to_owned())
+                    .package(package.to_owned())
+                    .upload_for_commit(filename, file)
+                    .await
+                    .wrap_err("Failed to upload file")?;
+                Ok::<(), Report>(())
+            })
+        })
+        .await?;
 
         Ok(())
     }
@@ -214,17 +236,19 @@ impl ObsUploader {
 
         let mut attempt = 0usize;
         loop {
-            match self
-                .client
-                .project(project.to_owned())
-                .package(package.to_owned())
-                .commit(
-                    &commit_files,
-                    &obs::CommitOptions {
-                        comment: Some(commit_message.to_owned()),
-                    },
-                )
-                .await?
+            match retry_request(|| async {
+                self.client
+                    .project(project.to_owned())
+                    .package(package.to_owned())
+                    .commit(
+                        &commit_files,
+                        &obs::CommitOptions {
+                            comment: Some(commit_message.to_owned()),
+                        },
+                    )
+                    .await
+            })
+            .await?
             {
                 obs::CommitResult::Success(dir) => {
                     return dir.rev.ok_or_else(|| eyre!("Revision is empty"));
@@ -283,7 +307,7 @@ impl ObsUploader {
                 branch_to,
                 dsc.source
             );
-            self.branch(&dsc.source, branch_to).await?;
+            retry_request(|| async { self.branch(&dsc.source, branch_to).await }).await?;
             branch_to
         } else {
             &self.project

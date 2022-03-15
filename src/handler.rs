@@ -24,6 +24,7 @@ use crate::{
     cleanup::cleanup_branch,
     monitor::{ObsMonitor, PackageCompletion, PackageMonitoringOptions},
     pipeline::{generate_monitor_pipeline, GeneratePipelineOptions},
+    retry::retry_request,
     upload::ObsUploader,
 };
 
@@ -200,12 +201,15 @@ impl ObsJobHandler {
             outputln!("Package unchanged at revision {}.", result.rev);
 
             // TODO: control rebuild triggers via flag
-            self.client
-                .project(result.project.clone())
-                .package(result.package.clone())
-                .rebuild()
-                .await
-                .wrap_err("Failed to trigger rebuild")?;
+            retry_request(|| async {
+                self.client
+                    .project(result.project.clone())
+                    .package(result.package.clone())
+                    .rebuild()
+                    .await
+            })
+            .await
+            .wrap_err("Failed to trigger rebuild")?;
         } else {
             outputln!("Package uploaded with revision {}.", result.rev);
         }

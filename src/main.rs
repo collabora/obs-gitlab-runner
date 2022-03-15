@@ -18,6 +18,7 @@ mod dsc;
 mod handler;
 mod monitor;
 mod pipeline;
+mod retry;
 mod upload;
 
 #[cfg(test)]

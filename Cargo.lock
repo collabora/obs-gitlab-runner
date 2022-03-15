@@ -1045,6 +1045,7 @@ checksum = "78cc372d058dcf6d5ecd98510e7fbc9e5aec4d21de70f65fea8fecebcd881bd4"
 [[package]]
 name = "gitlab-runner"
 version = "0.0.2-alpha.3"
+source = "git+https://github.com/refi64/gitlab-runner-rs?branch=runner#8dcd3130107fcb03ae22735a7135204ee6c51be8"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1067,6 +1068,7 @@ dependencies = [
 [[package]]
 name = "gitlab-runner-mock"
 version = "0.0.2-alpha.2"
+source = "git+https://github.com/refi64/gitlab-runner-rs?branch=runner#8dcd3130107fcb03ae22735a7135204ee6c51be8"
 dependencies = [
  "http-types",
  "multipart",
@@ -1809,6 +1811,7 @@ checksum = "624a8340c38c1b80fd549087862da4ba43e08858af025b236e509b6649fc13d5"
 [[package]]
 name = "open-build-service-api"
 version = "0.1.0"
+source = "git+https://github.com/refi64/open-build-service-rs?branch=things-3#63890d9df9108d59e7ceac747591913a1677fd35"
 dependencies = [
  "base16ct",
  "bytes",
@@ -1826,6 +1829,7 @@ dependencies = [
 [[package]]
 name = "open-build-service-mock"
 version = "0.1.0"
+source = "git+https://github.com/refi64/open-build-service-rs?branch=things-3#63890d9df9108d59e7ceac747591913a1677fd35"
 dependencies = [
  "base16ct",
  "http-types",
@@ -1884,6 +1888,7 @@ dependencies = [
 [[package]]
 name = "oscrc"
 version = "0.1.0"
+source = "git+https://github.com/refi64/open-build-service-rs?branch=things-3#63890d9df9108d59e7ceac747591913a1677fd35"
 dependencies = [
  "secret-service",
  "serde",

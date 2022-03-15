@@ -8,7 +8,7 @@ use std::{
 use async_trait::async_trait;
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{eyre, Context, Result};
 use derivative::*;
 use futures_util::StreamExt;
 use gitlab_runner::{job::Job, outputln, uploader::Uploader, JobHandler, JobResult, Phase};
@@ -110,12 +110,20 @@ struct Command {
     action: Action,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ObsBuildInfo {
     project: String,
     package: String,
-    rev: String,
+    rev: Option<String>,
     is_branched: bool,
+}
+
+impl ObsBuildInfo {
+    fn save(&self) -> Result<File> {
+        let mut file = tempfile::tempfile().wrap_err("Failed to create build info file")?;
+        serde_json::to_writer(&mut file, self).wrap_err("Failed to write build info file")?;
+        Ok(file)
+    }
 }
 
 #[derive(Debug)]
@@ -191,11 +199,52 @@ impl ObsJobHandler {
         } else {
             None
         };
+        let is_branched = branch_to.is_some();
 
-        let uploader = ObsUploader::new(self.client.clone(), args.project.clone());
-        let result = uploader
-            .upload_package(args.dsc.as_str().into(), branch_to.as_deref(), self)
-            .await?;
+        // The upload prep and actual upload are split in two so that we can
+        // already tell what the project & package name are, so build-info.json
+        // can be written and cleanup can take place regardless of the actual
+        // *upload* success.
+        let uploader = ObsUploader::prepare(
+            self.client.clone(),
+            args.project.clone(),
+            branch_to,
+            args.dsc.as_str().into(),
+            self,
+        )
+        .await?;
+        let result = uploader.upload_package().await;
+
+        // TODO: filter out disabled repos (technically we can just catch those
+        // in the monitor though?)
+        let build_info = ObsBuildInfo {
+            project: uploader.project().to_owned(),
+            package: uploader.package().to_owned(),
+            rev: result
+                .as_ref()
+                .map(|r| Some(r.rev.clone()))
+                .unwrap_or_default(),
+            is_branched,
+        };
+
+        let build_info_2 = build_info.clone();
+        match tokio::task::spawn_blocking(move || build_info_2.save())
+            .await
+            .map_err(|e| e.into())
+            .and_then(|r| r)
+        {
+            Ok(file) => {
+                self.artifacts
+                    .insert(args.build_info_out, AsyncFile::from_std(file));
+            }
+            Err(err) => {
+                error!(gitab.output = true, "Failed to save build info: {:?}", err);
+            }
+        }
+
+        // Now that build-info.json is saved, we can check the result of the
+        // actual upload.
+        let result = result?;
 
         if result.unchanged {
             outputln!("Package unchanged at revision {}.", result.rev);
@@ -203,8 +252,8 @@ impl ObsJobHandler {
             // TODO: control rebuild triggers via flag
             retry_request(|| async {
                 self.client
-                    .project(result.project.clone())
-                    .package(result.package.clone())
+                    .project(build_info.project.clone())
+                    .package(build_info.package.clone())
                     .rebuild()
                     .await
             })
@@ -213,23 +262,6 @@ impl ObsJobHandler {
         } else {
             outputln!("Package uploaded with revision {}.", result.rev);
         }
-
-        // TODO: filter out disabled repos (technically we can just catch those
-        // in the monitor though?)
-        let build_info = ObsBuildInfo {
-            project: result.project,
-            package: result.package,
-            rev: result.rev,
-            is_branched: branch_to.is_some(),
-        };
-
-        let mut build_info_file =
-            tempfile::tempfile().wrap_err("Failed to create build info file")?;
-        serde_json::to_writer(&mut build_info_file, &build_info)
-            .wrap_err("Failed to write build info file")?;
-
-        self.artifacts
-            .insert(args.build_info_out, AsyncFile::from_std(build_info_file));
 
         Ok(())
     }
@@ -271,7 +303,9 @@ impl ObsJobHandler {
             build_info.package.clone(),
             args.repository.clone(),
             args.arch.clone(),
-            build_info.rev,
+            build_info
+                .rev
+                .ok_or_else(|| eyre!("Build revision was not set"))?,
         )
         .await?;
 
@@ -381,7 +415,7 @@ impl ObsJobHandler {
                 &self.client,
                 &build_info.project,
                 &build_info.package,
-                &build_info.rev,
+                build_info.rev.as_deref(),
             )
             .await?;
         } else {
@@ -768,22 +802,19 @@ mod tests {
         );
         let dsc1_md5 = compute_md5(dsc1_contents.as_bytes());
 
+        let dsc1_bad_file = "test1-bad.dsc";
+        let dsc1_bad_contents =
+            dsc1_contents.replace(&test1_file, &(test1_file.to_owned() + ".missing"));
+
         context.obs_mock.add_project(TEST_PROJECT.to_owned());
 
         let artifacts = put_artifacts(
             context,
             [
+                (dsc1_file.to_owned(), dsc1_contents.as_bytes().to_vec()),
                 (
-                    dsc1_file.to_owned(),
-                    format!(
-                        "Source: {}\nFiles:\n {} {} {}",
-                        TEST_PACKAGE_1,
-                        test1_md5.clone(),
-                        test1_contents.len(),
-                        test1_file
-                    )
-                    .as_bytes()
-                    .to_vec(),
+                    dsc1_bad_file.to_owned(),
+                    dsc1_bad_contents.as_bytes().to_vec(),
                 ),
                 (test1_file.to_owned(), test1_contents.to_vec()),
             ]
@@ -798,6 +829,28 @@ mod tests {
             uploaded_project += ":branched";
             upload_command += &format!(" --branch-to {}", uploaded_project);
         }
+
+        let upload = enqueue_job(
+            context,
+            JobSpec {
+                name: "upload".to_owned(),
+                dependencies: vec![artifacts.clone()],
+                script: vec![upload_command.replace(dsc1_file, dsc1_bad_file)],
+                ..Default::default()
+            },
+        );
+
+        run_obs_handler(context).await;
+        assert_eq!(MockJobState::Failed, upload.state());
+
+        let results = get_job_artifacts(&upload);
+        let build_info: ObsBuildInfo =
+            serde_json::from_slice(&results.get(DEFAULT_BUILD_INFO).unwrap()).unwrap();
+
+        assert_eq!(build_info.project, uploaded_project);
+        assert_eq!(build_info.package, TEST_PACKAGE_1);
+        assert_none!(build_info.rev);
+        assert_eq!(build_info.is_branched, test == UploadTest::Branch);
 
         let mut upload = enqueue_job(
             context,
@@ -873,6 +926,7 @@ mod tests {
 
         assert_eq!(build_info.project, uploaded_project);
         assert_eq!(build_info.package, TEST_PACKAGE_1);
+        assert_some!(build_info.rev.as_deref());
         assert_eq!(build_info.is_branched, test == UploadTest::Branch);
 
         let mut dir = assert_ok!(

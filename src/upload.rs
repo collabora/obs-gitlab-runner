@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use bytes::Bytes;
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use color_eyre::eyre::{ensure, eyre, Context, Report, Result};
 use derivative::*;
 use futures_util::{FutureExt, Stream, TryStreamExt};
@@ -53,73 +53,115 @@ impl Default for ObsUploaderOptions {
 
 #[derive(Debug)]
 pub struct UploadResult {
-    pub project: String,
-    pub package: String,
     pub rev: String,
     pub unchanged: bool,
 }
 
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub struct ObsUploader {
+pub struct ObsUploader<'artifacts, Artifacts>
+where
+    Artifacts: ArtifactDirectory,
+{
     #[derivative(Debug = "ignore")]
     client: obs::Client,
 
     project: String,
+    package: String,
+
+    dsc_path: Utf8PathBuf,
+    #[derivative(Debug = "ignore")]
+    dsc_contents: Vec<u8>,
+    dsc: Dsc,
+
+    #[derivative(Debug = "ignore")]
+    artifacts: &'artifacts Artifacts,
+
     options: ObsUploaderOptions,
 }
 
-impl ObsUploader {
-    pub fn new(client: obs::Client, project: String) -> ObsUploader {
-        ObsUploader {
+impl<'artifacts, Artifacts> ObsUploader<'artifacts, Artifacts>
+where
+    Artifacts: ArtifactDirectory,
+{
+    pub async fn prepare<'a>(
+        client: obs::Client,
+        mut project: String,
+        branch_to: Option<String>,
+        dsc_path: Utf8PathBuf,
+        artifacts: &'a Artifacts,
+    ) -> Result<ObsUploader<'a, Artifacts>> {
+        let dsc_contents = artifacts
+            .get_data(dsc_path.as_str())
+            .await
+            .wrap_err("Failed to download dsc")?;
+        let dsc: Dsc =
+            rfc822_like::from_bytes(&dsc_contents[..]).wrap_err("Failed to parse dsc")?;
+
+        let package = dsc.source.to_owned();
+
+        if let Some(branch_to) = branch_to {
+            outputln!(
+                "Branching {}/{} -> {}/{}...",
+                project,
+                dsc.source,
+                branch_to,
+                dsc.source
+            );
+
+            let mut options = obs::BranchOptions {
+                target_project: Some(branch_to.clone()),
+                missingok: true,
+                force: true,
+                add_repositories_rebuild: Some(obs::RebuildMode::Local),
+                add_repositories_block: Some(obs::BlockMode::Never),
+                ..Default::default()
+            };
+
+            let client_package = client.project(project.clone()).package(package.clone());
+
+            let result = retry_request(|| async { client_package.branch(&options).await }).await;
+            if let Err(err) = result {
+                match err.downcast_ref::<obs::Error>() {
+                    Some(obs::Error::ApiError(e)) if e.code == "not_missing" => {
+                        options.missingok = false;
+                        retry_request(|| async { client_package.branch(&options).await }).await?;
+                    }
+                    _ => {
+                        return Err(err);
+                    }
+                }
+            }
+
+            project = branch_to;
+        }
+
+        Ok(ObsUploader {
             client,
             project,
+            package,
+            dsc_path,
+            dsc_contents,
+            dsc,
+            artifacts,
             options: Default::default(),
-        }
+        })
+    }
+
+    pub fn project(&self) -> &str {
+        &self.project
+    }
+
+    pub fn package(&self) -> &str {
+        &self.package
     }
 
     #[instrument(skip(self))]
-    async fn branch(&self, package_name: &str, branched_project: &str) -> Result<()> {
-        let mut options = obs::BranchOptions {
-            target_project: Some(branched_project.to_owned()),
-            missingok: true,
-            force: true,
-            add_repositories_rebuild: Some(obs::RebuildMode::Local),
-            add_repositories_block: Some(obs::BlockMode::Never),
-            ..Default::default()
-        };
-
+    async fn ensure_package_exists_and_list(&self) -> Result<obs::SourceDirectory> {
         let client_package = self
             .client
             .project(self.project.clone())
-            .package(package_name.to_owned());
-
-        let result = retry_request(|| async { client_package.branch(&options).await }).await;
-        if let Err(err) = result {
-            match err.downcast_ref::<obs::Error>() {
-                Some(obs::Error::ApiError(e)) if e.code == "not_missing" => {
-                    options.missingok = false;
-                    retry_request(|| async { client_package.branch(&options).await }).await?;
-                }
-                _ => {
-                    return Err(err);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    async fn ensure_package_exists_and_list(
-        &self,
-        project: &str,
-        package: &str,
-    ) -> Result<obs::SourceDirectory> {
-        let client_package = self
-            .client
-            .project(project.to_owned())
-            .package(package.to_owned());
+            .package(self.package.clone());
 
         match client_package.list(None).await {
             Ok(dir) => Ok(dir),
@@ -140,8 +182,6 @@ impl ObsUploader {
     #[instrument(skip(self))]
     async fn find_files_to_remove(
         &self,
-        project: &str,
-        package: &str,
         files: &HashMap<String, Md5String>,
     ) -> Result<HashSet<Md5String>> {
         let mut to_remove = HashSet::new();
@@ -154,8 +194,8 @@ impl ObsUploader {
                 let contents = retry_request(|| async {
                     collect_byte_stream(
                         self.client
-                            .project(project.to_owned())
-                            .package(package.to_owned())
+                            .project(self.project.clone())
+                            .package(self.package.clone())
                             .source_file(file)
                             .await?,
                     )
@@ -173,11 +213,11 @@ impl ObsUploader {
     }
 
     #[instrument(skip(self))]
-    async fn get_latest_meta_md5(&self, project: &str, package: &str) -> Result<Md5String> {
+    async fn get_latest_meta_md5(&self) -> Result<Md5String> {
         let dir = retry_request(|| async {
             self.client
-                .project(project.to_owned())
-                .package(package.to_owned())
+                .project(self.project.clone())
+                .package(self.package.clone())
                 .list_meta(None)
                 .await
         })
@@ -190,24 +230,20 @@ impl ObsUploader {
         Ok(meta.md5)
     }
 
-    #[instrument(skip(self, artifacts))]
-    async fn upload_file(
-        &self,
-        project: &str,
-        package: &str,
-        root: &Utf8Path,
-        filename: &str,
-        artifacts: &impl ArtifactDirectory,
-    ) -> Result<()> {
+    #[instrument(skip(self))]
+    async fn upload_file(&self, root: &Utf8Path, filename: &str) -> Result<()> {
         debug!("Uploading file");
-        let file = artifacts.get_file(root.join(filename).as_str()).await?;
+        let file = self
+            .artifacts
+            .get_file(root.join(filename).as_str())
+            .await?;
 
         retry_large_request(|| {
             file.try_clone().then(|file| async {
                 let file = file.wrap_err("Failed to clone file")?;
                 self.client
-                    .project(project.to_owned())
-                    .package(package.to_owned())
+                    .project(self.project.clone())
+                    .package(self.package.clone())
                     .upload_for_commit(filename, file)
                     .await
                     .wrap_err("Failed to upload file")?;
@@ -219,15 +255,12 @@ impl ObsUploader {
         Ok(())
     }
 
-    #[instrument(skip(self, artifacts))]
+    #[instrument(skip(self))]
     async fn commit(
         &self,
-        project: &str,
-        package: &str,
         commit_message: &str,
         root: &Utf8Path,
         files: HashMap<String, Md5String>,
-        artifacts: &impl ArtifactDirectory,
     ) -> Result<String> {
         let mut commit_files = obs::CommitFileList::new();
         for (name, md5) in files {
@@ -238,8 +271,8 @@ impl ObsUploader {
         loop {
             match retry_request(|| async {
                 self.client
-                    .project(project.to_owned())
-                    .package(package.to_owned())
+                    .project(self.project.clone())
+                    .package(self.package.clone())
                     .commit(
                         &commit_files,
                         &obs::CommitOptions {
@@ -271,109 +304,67 @@ impl ObsUploader {
                     attempt += 1;
 
                     for entry in missing.entries {
-                        self.upload_file(project, package, root, &entry.name, artifacts)
-                            .await?;
+                        self.upload_file(root, &entry.name).await?;
                     }
                 }
             }
         }
     }
 
-    #[instrument(skip(artifacts))]
-    pub async fn upload_package(
-        &self,
-        dsc_path: &Utf8Path,
-        branch_to: Option<&str>,
-        artifacts: &impl ArtifactDirectory,
-    ) -> Result<UploadResult> {
-        let dsc_parent = dsc_path
+    #[instrument]
+    pub async fn upload_package(&self) -> Result<UploadResult> {
+        let dsc_parent = self
+            .dsc_path
             .parent()
-            .ok_or_else(|| eyre!("Invalid dsc path: {}", dsc_path))?;
-        let dsc_filename = dsc_path
+            .ok_or_else(|| eyre!("Invalid dsc path: {}", self.dsc_path))?;
+        let dsc_filename = self
+            .dsc_path
             .file_name()
-            .ok_or_else(|| eyre!("Invalid dsc path: {}", dsc_path))?;
-
-        let dsc_data = artifacts
-            .get_data(dsc_path.as_str())
-            .await
-            .wrap_err("Failed to download dsc")?;
-        let dsc: Dsc = rfc822_like::from_bytes(&dsc_data[..]).wrap_err("Failed to parse dsc")?;
-
-        let project = if let Some(branch_to) = branch_to {
-            outputln!(
-                "Branching {}/{} -> {}/{}...",
-                self.project,
-                dsc.source,
-                branch_to,
-                dsc.source
-            );
-            retry_request(|| async { self.branch(&dsc.source, branch_to).await }).await?;
-            branch_to
-        } else {
-            &self.project
-        };
+            .ok_or_else(|| eyre!("Invalid dsc path: {}", self.dsc_path))?;
 
         outputln!(
             "Uploading {} to {}/{}...",
             dsc_filename,
-            project,
-            dsc.source
+            self.project,
+            self.package
         );
 
-        let dir = self
-            .ensure_package_exists_and_list(project, &dsc.source)
-            .await?;
+        let dir = self.ensure_package_exists_and_list().await?;
         let present_files: HashMap<_, _> =
             dir.entries.into_iter().map(|e| (e.name, e.md5)).collect();
 
         let mut files_to_commit = present_files.clone();
 
-        for to_remove in self
-            .find_files_to_remove(project, &dsc.source, &files_to_commit)
-            .await?
-        {
+        for to_remove in self.find_files_to_remove(&files_to_commit).await? {
             files_to_commit.remove(&to_remove);
         }
 
-        for file in dsc.files {
-            files_to_commit.insert(file.filename, file.hash);
+        for file in &self.dsc.files {
+            files_to_commit.insert(file.filename.clone(), file.hash.clone());
         }
 
-        files_to_commit.insert(
-            META_NAME.to_owned(),
-            self.get_latest_meta_md5(project, &dsc.source).await?,
-        );
-        files_to_commit.insert(dsc_filename.to_owned(), compute_md5(&dsc_data[..]));
+        files_to_commit.insert(META_NAME.to_owned(), self.get_latest_meta_md5().await?);
+        files_to_commit.insert(dsc_filename.to_owned(), compute_md5(&self.dsc_contents[..]));
 
         trace!(?files_to_commit, ?present_files);
 
-        let (rev, unchanged) = if files_to_commit != present_files {
-            (
-                self.commit(
-                    project,
-                    &dsc.source,
-                    dsc_filename,
-                    dsc_parent,
-                    files_to_commit,
-                    artifacts,
-                )
-                .await?,
-                false,
-            )
+        Ok(if files_to_commit != present_files {
+            UploadResult {
+                rev: self
+                    .commit(dsc_filename, dsc_parent, files_to_commit)
+                    .await?,
+                unchanged: false,
+            }
         } else {
-            // SAFETY: .unwrap() would only fail if the revision is unset, which
-            // would only happen if this were the *empty* zero revision. Because
-            // we always try to add the _meta file, our files to commit is
-            // *never* empty, thus the present revision cannot be empty for this
-            // block to be entered.
-            (dir.rev.unwrap(), true)
-        };
-
-        Ok(UploadResult {
-            project: project.to_owned(),
-            package: dsc.source,
-            rev,
-            unchanged,
+            UploadResult {
+                // SAFETY: .unwrap() would only fail if the revision is unset, which
+                // would only happen if this were the *empty* zero revision. Because
+                // we always try to add the _meta file, our files to commit is
+                // *never* empty, thus the present revision cannot be empty for this
+                // block to be entered.
+                rev: dir.rev.unwrap(),
+                unchanged: true,
+            }
         })
     }
 }
@@ -388,6 +379,15 @@ mod tests {
     use crate::{artifacts::test_support::MockArtifactDirectory, test_support::*};
 
     use super::*;
+
+    const STUB_DSC: &str = "stub.dsc";
+
+    fn add_stub_dsc(artifacts: &mut MockArtifactDirectory, package: &str) {
+        artifacts.artifacts.insert(
+            STUB_DSC.to_owned(),
+            Arc::new(format!("Source: {}", package).as_bytes().to_vec()),
+        );
+    }
 
     #[tokio::test]
     async fn test_create_list_package() {
@@ -421,21 +421,38 @@ mod tests {
         );
 
         let client = create_default_client(&mock);
-        let uploader = ObsUploader::new(client, TEST_PROJECT.to_owned());
+        let mut artifacts = MockArtifactDirectory {
+            artifacts: [].into(),
+        };
 
-        let dir = assert_ok!(
-            uploader
-                .ensure_package_exists_and_list(TEST_PROJECT, TEST_PACKAGE_1)
-                .await
+        add_stub_dsc(&mut artifacts, TEST_PACKAGE_1);
+        let uploader = assert_ok!(
+            ObsUploader::prepare(
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                None,
+                STUB_DSC.to_owned().into(),
+                &artifacts,
+            )
+            .await
         );
+
+        let dir = assert_ok!(uploader.ensure_package_exists_and_list().await);
         assert_eq!(dir.entries.len(), 1);
         assert_eq!(dir.entries[0].name, test_file);
 
-        let dir = assert_ok!(
-            uploader
-                .ensure_package_exists_and_list(TEST_PROJECT, TEST_PACKAGE_2)
-                .await
+        add_stub_dsc(&mut artifacts, TEST_PACKAGE_2);
+        let uploader = assert_ok!(
+            ObsUploader::prepare(
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                None,
+                STUB_DSC.to_owned().into(),
+                &artifacts,
+            )
+            .await
         );
+        let dir = assert_ok!(uploader.ensure_package_exists_and_list().await);
         assert_eq!(dir.entries.len(), 0);
     }
 
@@ -463,8 +480,8 @@ mod tests {
         let package_1 = client
             .project(TEST_PROJECT.to_owned())
             .package(TEST_PACKAGE_1.to_owned());
-        let uploader = ObsUploader::new(client.clone(), TEST_PROJECT.to_owned());
-        let artifacts = MockArtifactDirectory {
+
+        let mut artifacts = MockArtifactDirectory {
             artifacts: [
                 (test1_file.to_owned(), Arc::new(test1_contents.to_vec())),
                 (test2_file.to_owned(), Arc::new(test2_contents.to_vec())),
@@ -472,15 +489,24 @@ mod tests {
             .into(),
         };
 
+        add_stub_dsc(&mut artifacts, TEST_PACKAGE_1);
+        let uploader = assert_ok!(
+            ObsUploader::prepare(
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                None,
+                STUB_DSC.to_owned().into(),
+                &artifacts,
+            )
+            .await
+        );
+
         assert_ok!(
             uploader
                 .commit(
-                    TEST_PROJECT,
-                    TEST_PACKAGE_1,
                     "commit",
                     "".into(),
                     [(test1_file.to_owned(), test1_md5.to_owned())].into(),
-                    &artifacts,
                 )
                 .await
         );
@@ -495,8 +521,6 @@ mod tests {
         assert_ok!(
             uploader
                 .commit(
-                    TEST_PROJECT,
-                    TEST_PACKAGE_1,
                     "message",
                     "".into(),
                     [
@@ -504,7 +528,6 @@ mod tests {
                         (test2_file.to_owned(), test2_md5.to_owned()),
                     ]
                     .into(),
-                    &artifacts,
                 )
                 .await
         );
@@ -525,12 +548,9 @@ mod tests {
         assert_ok!(
             uploader
                 .commit(
-                    TEST_PROJECT,
-                    TEST_PACKAGE_1,
                     "message",
                     "".into(),
                     [(test2_file.to_owned(), test2_md5.to_owned())].into(),
-                    &artifacts,
                 )
                 .await
         );
@@ -612,7 +632,7 @@ mod tests {
         let package_1 = client
             .project(TEST_PROJECT.to_owned())
             .package(TEST_PACKAGE_1.to_owned());
-        let uploader = ObsUploader::new(client.clone(), TEST_PROJECT.to_owned());
+
         let mut artifacts = MockArtifactDirectory {
             artifacts: [
                 (
@@ -645,7 +665,17 @@ mod tests {
 
         // Start adding a few source files.
 
-        let result = assert_ok!(uploader.upload_package(dsc1_file, None, &artifacts).await);
+        let uploader = assert_ok!(
+            ObsUploader::prepare(
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                None,
+                dsc1_file.to_owned().into(),
+                &artifacts
+            )
+            .await
+        );
+        let result = assert_ok!(uploader.upload_package().await);
         assert_eq!(result.rev, "1");
         assert!(!result.unchanged);
 
@@ -686,7 +716,17 @@ mod tests {
                 .await
         );
 
-        let result = assert_ok!(uploader.upload_package(dsc2_file, None, &artifacts).await);
+        let uploader = assert_ok!(
+            ObsUploader::prepare(
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                None,
+                dsc2_file.to_owned().into(),
+                &artifacts
+            )
+            .await
+        );
+        let result = assert_ok!(uploader.upload_package().await);
         assert_eq!(result.rev, "3");
         assert!(!result.unchanged);
 
@@ -711,7 +751,17 @@ mod tests {
             Arc::new(test1_contents_b.to_vec()),
         );
 
-        let result = assert_ok!(uploader.upload_package(dsc3_file, None, &artifacts).await);
+        let uploader = assert_ok!(
+            ObsUploader::prepare(
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                None,
+                dsc3_file.to_owned().into(),
+                &artifacts
+            )
+            .await
+        );
+        let result = assert_ok!(uploader.upload_package().await);
         assert_eq!(result.rev, "4");
         assert!(!result.unchanged);
 
@@ -731,7 +781,17 @@ mod tests {
 
         // Remove the second test file.
 
-        let result = assert_ok!(uploader.upload_package(dsc4_file, None, &artifacts).await);
+        let uploader = assert_ok!(
+            ObsUploader::prepare(
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                None,
+                dsc4_file.to_owned().into(),
+                &artifacts
+            )
+            .await
+        );
+        let result = assert_ok!(uploader.upload_package().await);
         assert_eq!(result.rev, "5");
         assert!(!result.unchanged);
 
@@ -749,19 +809,25 @@ mod tests {
 
         // Re-upload with no changes and ensure the old commit is returned.
 
-        let result = assert_ok!(uploader.upload_package(dsc4_file, None, &artifacts).await);
+        let result = assert_ok!(uploader.upload_package().await);
         assert_eq!(result.rev, "5");
         assert!(result.unchanged);
 
         // Upload to a new branch.
 
         let branched_project = format!("{}:branch", TEST_PROJECT);
-        let result = assert_ok!(
-            uploader
-                .upload_package(dsc4_file, Some(&branched_project), &artifacts)
-                .await
+        let uploader = assert_ok!(
+            ObsUploader::prepare(
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                Some(branched_project.clone()),
+                dsc4_file.to_owned().into(),
+                &artifacts
+            )
+            .await
         );
-        assert_eq!(result.project, branched_project);
+        assert_eq!(uploader.project(), branched_project);
+        let result = assert_ok!(uploader.upload_package().await);
         // TODO: check the revision, once the mock APIs have branches
         // incorporate the origin's history
         assert!(!result.unchanged);

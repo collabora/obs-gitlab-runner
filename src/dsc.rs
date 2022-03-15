@@ -91,7 +91,9 @@ where
 #[serde(rename_all = "PascalCase")]
 pub struct Dsc {
     pub source: String,
-    #[serde(deserialize_with = "de_line_delimited")]
+    // Note that this is 'default' solely so the tests can avoid creating dummy
+    // file lists.
+    #[serde(default, deserialize_with = "de_line_delimited")]
     pub files: Vec<FileEntry>,
 }
 

@@ -47,6 +47,8 @@ struct UploadAction {
     branch_to: String,
     #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned())]
     build_info_out: String,
+    #[clap(long)]
+    rebuild_if_unchanged: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -254,16 +256,17 @@ impl ObsJobHandler {
         if result.unchanged {
             outputln!("Package unchanged at revision {}.", result.rev);
 
-            // TODO: control rebuild triggers via flag
-            retry_request(|| async {
-                self.client
-                    .project(build_info.project.clone())
-                    .package(build_info.package.clone())
-                    .rebuild()
-                    .await
-            })
-            .await
-            .wrap_err("Failed to trigger rebuild")?;
+            if args.rebuild_if_unchanged {
+                retry_request(|| async {
+                    self.client
+                        .project(build_info.project.clone())
+                        .package(build_info.package.clone())
+                        .rebuild()
+                        .await
+                })
+                .await
+                .wrap_err("Failed to trigger rebuild")?;
+            }
         } else {
             outputln!("Package uploaded with revision {}.", result.rev);
         }
@@ -914,6 +917,29 @@ mod tests {
                     name: "upload".to_owned(),
                     dependencies: vec![artifacts.clone()],
                     script: vec![upload_command.clone()],
+                    ..Default::default()
+                },
+            );
+
+            run_obs_handler(context).await;
+            assert_eq!(MockJobState::Success, upload.state());
+
+            let status = assert_ok!(
+                context
+                    .obs_client
+                    .project(uploaded_project.clone())
+                    .package(TEST_PACKAGE_1.to_owned())
+                    .status(TEST_REPO, TEST_ARCH_1)
+                    .await
+            );
+            assert_eq!(status.code, obs::PackageCode::Failed);
+
+            upload = enqueue_job(
+                context,
+                JobSpec {
+                    name: "upload".to_owned(),
+                    dependencies: vec![artifacts.clone()],
+                    script: vec![format!("{} --rebuild-if-unchanged", upload_command)],
                     ..Default::default()
                 },
             );

@@ -21,7 +21,7 @@ pub async fn download_binaries(
         client
             .project(project.to_owned())
             .package(package.to_owned())
-            .binaries(&repository, &arch)
+            .binaries(repository, arch)
             .await
     })
     .await?;
@@ -39,7 +39,7 @@ pub async fn download_binaries(
                 let stream = client
                     .project(project.to_owned())
                     .package(package.to_owned())
-                    .binary_file(&repository, &arch, &binary.filename)
+                    .binary_file(repository, arch, &binary.filename)
                     .await
                     .wrap_err("Failed to request file")?;
 

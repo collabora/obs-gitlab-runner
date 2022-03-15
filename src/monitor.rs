@@ -142,7 +142,7 @@ impl ObsMonitor {
             .get_status(&self.package)
             .ok_or_else(|| eyre!("Package {} missing", self.package))?;
         if status.dirty {
-            return Ok(PackageBuildState::Dirty);
+            Ok(PackageBuildState::Dirty)
         } else if status.code.is_final() {
             Ok(PackageBuildState::Completed(match status.code {
                 obs::PackageCode::Disabled | obs::PackageCode::Excluded => {

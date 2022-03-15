@@ -175,7 +175,7 @@ where
                 .await?;
                 client_package.list(None).await.map_err(|e| e.into())
             }
-            Err(err) => return Err(err.into()),
+            Err(err) => Err(err.into()),
         }
     }
 

@@ -499,8 +499,8 @@ impl JobHandler for ObsJobHandler {
     async fn upload_artifacts(&mut self, uploader: &mut Uploader) -> JobResult {
         let mut success = true;
 
-        for (name, mut file) in &mut self.artifacts {
-            if let Err(err) = upload_artifact(name.clone(), &mut file, uploader).await {
+        for (name, file) in &mut self.artifacts {
+            if let Err(err) = upload_artifact(name.clone(), file, uploader).await {
                 error!(gitlab.output = true, "Failed to upload {}: {:?}", name, err);
                 success = false;
             }

@@ -5,7 +5,7 @@ use futures_util::TryStreamExt;
 use open_build_service_api as obs;
 use tokio::{fs::File as AsyncFile, io::AsyncSeekExt};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
-use tracing::instrument;
+use tracing::{info_span, instrument, Instrument};
 
 use crate::retry::{retry_large_request, retry_request};
 
@@ -28,7 +28,6 @@ pub async fn download_binaries(
     let mut binaries = HashMap::new();
 
     for binary in binary_list.binaries {
-        // TODO: span
         let mut dest = retry_large_request(|| {
             let binary = binary.clone();
             let client = client.clone();
@@ -56,9 +55,12 @@ pub async fn download_binaries(
                 Ok::<AsyncFile, Report>(dest)
             }
         })
+        .instrument(info_span!("download_binaries:download", ?binary))
         .await?;
 
-        dest.rewind().await.wrap_err("Failed to rewind")?;
+        dest.rewind()
+            .instrument(info_span!("download_binaries:rewind", ?binary))
+            .await?;
         binaries.insert(binary.filename, dest);
     }
 

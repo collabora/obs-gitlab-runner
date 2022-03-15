@@ -11,7 +11,12 @@ use clap::{Parser, Subcommand};
 use color_eyre::eyre::{eyre, Context, Result};
 use derivative::*;
 use futures_util::StreamExt;
-use gitlab_runner::{job::Job, outputln, uploader::Uploader, JobHandler, JobResult, Phase};
+use gitlab_runner::{
+    job::{Dependency, Job},
+    outputln,
+    uploader::Uploader,
+    JobHandler, JobResult, Phase,
+};
 use open_build_service_api as obs;
 use serde::{Deserialize, Serialize};
 use tokio::{fs::File as AsyncFile, io::AsyncSeekExt};
@@ -506,6 +511,29 @@ impl JobHandler for ObsJobHandler {
     }
 }
 
+#[instrument(skip(dep), fields(dep_id = dep.id(), dep_name = dep.name()))]
+async fn check_for_artifact(dep: Dependency<'_>, filename: &str) -> Result<Option<AsyncFile>> {
+    // Needed because anything captured by spawn_blocking must have a 'static
+    // lifetime.
+    let filename = filename.to_owned();
+
+    // TODO: not spawn a sync environment for *every single artifact*
+    if let Some(mut artifact) = dep.download().await? {
+        if let Some(file) = tokio::task::spawn_blocking(move || {
+            artifact
+                .file(&filename)
+                .map(|mut file| save_to_tempfile(&mut file))
+                .transpose()
+        })
+        .await??
+        {
+            return Ok(Some(AsyncFile::from_std(file)));
+        }
+    }
+
+    Ok(None)
+}
+
 #[async_trait]
 impl ArtifactDirectory for ObsJobHandler {
     type Reader = File;
@@ -522,24 +550,8 @@ impl ArtifactDirectory for ObsJobHandler {
         }
 
         for dep in self.job.dependencies() {
-            // TODO: setup span
-            // TODO: not spawn a sync environment for *every single artifact*
-
-            // Needed because anything captured by spawn_blocking must have a
-            // 'static lifetime.
-            let filename = filename.to_owned();
-
-            if let Some(mut artifact) = dep.download().await? {
-                if let Some(file) = tokio::task::spawn_blocking(move || {
-                    artifact
-                        .file(&filename)
-                        .map(|mut file| save_to_tempfile(&mut file))
-                        .transpose()
-                })
-                .await??
-                {
-                    return Ok(Some(AsyncFile::from_std(file)));
-                }
+            if let Some(file) = check_for_artifact(dep, filename).await? {
+                return Ok(Some(file));
             }
         }
 

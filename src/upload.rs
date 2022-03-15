@@ -8,7 +8,7 @@ use futures_util::{FutureExt, Stream, TryStreamExt};
 use gitlab_runner::outputln;
 use md5::{Digest, Md5};
 use open_build_service_api as obs;
-use tracing::{debug, instrument, trace};
+use tracing::{debug, info_span, instrument, trace, Instrument};
 
 use crate::{
     artifacts::ArtifactDirectory,
@@ -190,7 +190,6 @@ where
             if file.ends_with(".dsc") {
                 to_remove.insert(file.clone());
 
-                // TODO: span with 'file' here
                 let contents = retry_request(|| async {
                     collect_byte_stream(
                         self.client
@@ -201,8 +200,12 @@ where
                     )
                     .await
                 })
+                .instrument(info_span!("find_files_to_remove:download", %file))
                 .await?;
+
+                let _span = info_span!("find_files_to_remove:parse", %file);
                 let dsc: Dsc = rfc822_like::from_bytes(&contents[..])?;
+
                 to_remove.extend(dsc.files.into_iter().map(|f| f.filename));
             } else if file.ends_with(".changes") {
                 to_remove.insert(file.clone());

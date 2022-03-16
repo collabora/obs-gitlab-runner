@@ -1,11 +1,9 @@
 use std::{fmt, str::FromStr};
 
 use clap::Parser;
-use color_eyre::eyre::{eyre, Result};
-use gitlab_runner::{job::Job, Runner};
-use open_build_service_api as obs;
-use oscrc::Oscrc;
-use tracing::{error, info, instrument};
+use color_eyre::eyre::Result;
+use gitlab_runner::Runner;
+use tracing::{error, info};
 use tracing_subscriber::{filter::targets::Targets, prelude::*, util::SubscriberInitExt, Layer};
 use url::Url;
 
@@ -62,19 +60,6 @@ struct Args {
     log: TargetsArg,
 }
 
-#[instrument(skip_all, fields(job = job.id()))]
-fn create_obs_client(job: &Job) -> Result<obs::Client> {
-    let osc_config = job
-        .variable("OSC_CONFIG")
-        .ok_or_else(|| eyre!("Missing OSC_CONFIG"))?;
-
-    let oscrc = Oscrc::from_reader(osc_config.value().as_bytes())?;
-    let url = oscrc.default_service().clone();
-    let (user, pass) = oscrc.credentials(&url)?;
-
-    Ok(obs::Client::new(url, user, pass))
-}
-
 #[tokio::main]
 async fn main() {
     const MAX_JOBS: usize = 64;
@@ -100,13 +85,11 @@ async fn main() {
     runner
         .run(
             |job| async {
-                match create_obs_client(&job) {
-                    Ok(client) => Ok(ObsJobHandler::new(job, client, HandlerOptions::default())),
-                    Err(err) => {
+                ObsJobHandler::from_obs_config_in_job(job, HandlerOptions::default()).map_err(
+                    |err| {
                         error!("Failed to create new client: {:?}", err);
-                        Err(())
-                    }
-                }
+                    },
+                )
             },
             MAX_JOBS,
         )

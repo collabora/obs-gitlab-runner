@@ -12,7 +12,7 @@ use color_eyre::eyre::{eyre, Context, Result};
 use derivative::*;
 use futures_util::StreamExt;
 use gitlab_runner::{
-    job::{Dependency, Job},
+    job::{Dependency, Job, Variable},
     outputln,
     uploader::Uploader,
     JobHandler, JobResult, Phase,
@@ -146,6 +146,11 @@ impl std::error::Error for FailedBuild {}
 
 const LOG_TAIL_2MB: u64 = 2 * 1024 * 1024;
 
+fn get_job_variable<'job>(job: &'job Job, key: &str) -> Result<Variable<'job>> {
+    job.variable(key)
+        .ok_or_else(|| eyre!("Failed to get variable ${}", key))
+}
+
 #[derive(Debug, Derivative)]
 #[derivative(Default)]
 pub struct HandlerOptions {
@@ -172,6 +177,20 @@ impl ObsJobHandler {
             script_failed: false,
             artifacts: HashMap::new(),
         }
+    }
+
+    #[instrument(skip_all, fields(job = job.id()))]
+    pub fn from_obs_config_in_job(job: Job, options: HandlerOptions) -> Result<Self> {
+        let obs_server = get_job_variable(&job, "OBS_SERVER")?;
+        let obs_user = get_job_variable(&job, "OBS_USER")?;
+        let obs_password = get_job_variable(&job, "OBS_PASSWORD")?;
+
+        let client = obs::Client::new(
+            obs_server.value().try_into().wrap_err("Invalid URL")?,
+            obs_user.value().to_owned(),
+            obs_password.value().to_owned(),
+        );
+        Ok(ObsJobHandler::new(job, client, options))
     }
 
     fn expand_vars<'s>(
@@ -703,6 +722,15 @@ mod tests {
             builder.add_variable(key, value, true, false);
         }
 
+        builder.add_variable(
+            "OBS_SERVER".to_owned(),
+            context.obs_client.url().to_string(),
+            false,
+            true,
+        );
+        builder.add_variable("OBS_USER".to_owned(), TEST_USER.to_owned(), false, true);
+        builder.add_variable("OBS_PASSWORD".to_owned(), TEST_PASS.to_owned(), false, true);
+
         let job = builder.build();
         context.gitlab_mock.enqueue_job(job.clone());
         job
@@ -778,11 +806,9 @@ mod tests {
     }
 
     async fn run_obs_handler(context: &mut TestContext) {
-        let client = context.obs_client.clone();
         run_handler(context, move |job| {
-            ObsJobHandler::new(
+            assert_ok!(ObsJobHandler::from_obs_config_in_job(
                 job,
-                client,
                 HandlerOptions {
                     log_tail: TEST_LOG_TAIL,
                     monitor: PackageMonitoringOptions {
@@ -790,7 +816,7 @@ mod tests {
                         sleep_on_dirty: Duration::ZERO,
                     },
                 },
-            )
+            ))
         })
         .await;
     }

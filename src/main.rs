@@ -52,9 +52,9 @@ impl fmt::Display for TargetsArg {
 
 #[derive(Parser)]
 struct Args {
-    #[clap(env = "GITHUB_URL")]
+    #[clap(env = "GITLAB_URL")]
     server: Url,
-    #[clap(env = "GITHUB_TOKEN")]
+    #[clap(env = "GITLAB_TOKEN")]
     token: String,
     #[clap(long, env = "OBS_RUNNER_LOG", default_value_t = TargetsArg::default())]
     log: TargetsArg,

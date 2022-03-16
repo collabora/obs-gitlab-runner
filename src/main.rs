@@ -56,7 +56,7 @@ struct Args {
     server: Url,
     #[clap(env = "GITHUB_TOKEN")]
     token: String,
-    #[clap(long, env = "RUST_LOG", default_value_t = TargetsArg::default())]
+    #[clap(long, env = "OBS_RUNNER_LOG", default_value_t = TargetsArg::default())]
     log: TargetsArg,
 }
 

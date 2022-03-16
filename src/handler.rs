@@ -34,7 +34,7 @@ use crate::{
 };
 
 const DEFAULT_BUILD_INFO: &str = "build-info.json";
-const DEFAULT_MONITOR_PIPELINE: &str = "obs-monitor.yml";
+const DEFAULT_MONITOR_PIPELINE: &str = "obs.yml";
 const DEFAULT_PIPELINE_JOB_PREFIX: &str = "obs";
 const DEFAULT_BUILD_RESULTS_DIR: &str = "results";
 const DEFAULT_BUILD_LOG: &str = "build.log";

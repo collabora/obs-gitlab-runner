@@ -32,7 +32,7 @@ tracing-error = "0.2"
 tracing-subscriber = "0.3"
 url = "2.2"
 
-gitlab-runner = { git = "https://github.com/refi64/gitlab-runner-rs", branch = "runner" }
+gitlab-runner = { git = "https://github.com/collabora/gitlab-runner-rs" }
 # gitlab-runner = { path = "../gitlab-runner-rs/gitlab-runner" }
 open-build-service-api = { git = "https://github.com/refi64/open-build-service-rs", branch = "things-3" }
 # open-build-service-api = { path = "../open-build-service-rs/open-build-service-api" }
@@ -43,7 +43,7 @@ rstest = "0.12"
 wiremock = "0.5"
 zip = "0.5"
 
-gitlab-runner-mock = { git = "https://github.com/refi64/gitlab-runner-rs", branch = "runner" }
+gitlab-runner-mock = { git = "https://github.com/collabora/gitlab-runner-rs" }
 # gitlab-runner-mock = { path = "../gitlab-runner-rs/gitlab-runner-mock" }
 open-build-service-mock = { git = "https://github.com/refi64/open-build-service-rs", branch = "things-3" }
 # open-build-service-mock = { path = "../open-build-service-rs/open-build-service-mock" }

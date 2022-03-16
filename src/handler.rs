@@ -69,10 +69,11 @@ struct GenerateMonitorAction {
 
 #[derive(Parser, Debug)]
 struct MonitorAction {
+    project: String,
+    package: String,
+    rev: String,
     repository: String,
     arch: String,
-    #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned())]
-    build_info: String,
     #[clap(long, default_value_t = DEFAULT_BUILD_RESULTS_DIR.into())]
     build_results_dir: Utf8PathBuf,
     #[clap(long, default_value_t = DEFAULT_BUILD_LOG.into())]
@@ -302,7 +303,10 @@ impl ObsJobHandler {
         let file = generate_monitor_pipeline(
             self.client.clone(),
             &build_info.project,
-            &args.build_info,
+            &build_info.package,
+            &build_info
+                .rev
+                .ok_or_else(|| eyre!("Build revision was not set"))?,
             GeneratePipelineOptions {
                 build_results_dir: args.build_results_dir.to_string(),
                 prefix: args.job_prefix,
@@ -320,19 +324,13 @@ impl ObsJobHandler {
 
     #[instrument(skip(self))]
     async fn run_monitor(&mut self, args: MonitorAction) -> Result<()> {
-        let build_info_data = self.get_data(&args.build_info).await?;
-        let build_info: ObsBuildInfo = serde_json::from_slice(&build_info_data[..])
-            .wrap_err("Failed to parse provided build info file")?;
-
         let monitor = ObsMonitor::new(
             self.client.clone(),
-            build_info.project.clone(),
-            build_info.package.clone(),
+            args.project.clone(),
+            args.package.clone(),
             args.repository.clone(),
             args.arch.clone(),
-            build_info
-                .rev
-                .ok_or_else(|| eyre!("Build revision was not set"))?,
+            args.rev,
         )
         .await?;
 
@@ -357,8 +355,8 @@ impl ObsJobHandler {
 
                 let binaries = download_binaries(
                     self.client.clone(),
-                    &build_info.project,
-                    &build_info.package,
+                    &args.project,
+                    &args.package,
                     &args.repository,
                     &args.arch,
                 )

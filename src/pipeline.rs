@@ -24,12 +24,15 @@ struct JobSpec {
 pub async fn generate_monitor_pipeline(
     client: obs::Client,
     project: &str,
-    build_info_file: &str,
+    package: &str,
+    rev: &str,
     options: GeneratePipelineOptions,
 ) -> Result<File> {
+    const PROJECT_VAR: &str = "_OBS_RUNNER_PROJECT";
+    const PACKAGE_VAR: &str = "_OBS_RUNNER_PACKAGE";
+    const REV_VAR: &str = "_OBS_RUNNER_REV";
     const REPO_VAR: &str = "_OBS_RUNNER_REPO";
     const ARCH_VAR: &str = "_OBS_RUNNER_ARCH";
-    const BUILD_INFO_VAR: &str = "_OBS_RUNNER_BUILD_INFO";
 
     let mixin: serde_yaml::Mapping = options
         .mixin
@@ -52,14 +55,16 @@ pub async fn generate_monitor_pipeline(
                 format!("{}-{}-{}", options.prefix, repo.name, arch),
                 JobSpec {
                     variables: [
+                        (PROJECT_VAR.to_owned(), project.to_owned()),
+                        (PACKAGE_VAR.to_owned(), package.to_owned()),
+                        (REV_VAR.to_owned(), rev.to_owned()),
                         (REPO_VAR.to_owned(), repo.name.clone()),
                         (ARCH_VAR.to_owned(), arch),
-                        (BUILD_INFO_VAR.to_owned(), build_info_file.to_owned()),
                     ]
                     .into(),
                     script: vec![format!(
-                        "monitor ${} ${} --build-info ${}",
-                        REPO_VAR, ARCH_VAR, BUILD_INFO_VAR
+                        "monitor ${} ${} ${} ${} ${}",
+                        PROJECT_VAR, PACKAGE_VAR, REV_VAR, REPO_VAR, ARCH_VAR,
                     )],
                     mixin: mixin.clone(),
                 },

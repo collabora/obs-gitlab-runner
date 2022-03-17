@@ -23,7 +23,7 @@ pub enum PackageCompletion {
 
 #[derive(Debug)]
 enum PackageBuildState {
-    Building,
+    Building(obs::PackageCode),
     Dirty,
     Completed(PackageCompletion),
 }
@@ -152,7 +152,7 @@ impl ObsMonitor {
                 code => PackageCompletion::Failed(code),
             }))
         } else {
-            Ok(PackageBuildState::Building)
+            Ok(PackageBuildState::Building(status.code))
         }
     }
 
@@ -184,11 +184,21 @@ impl ObsMonitor {
             .push(&self.arch);
 
         outputln!("Live build log: {}", log_url);
-        outputln!("Monitoring build...");
+
+        let mut previous_code = None;
 
         loop {
             match self.get_latest_state().await? {
-                PackageBuildState::Building => {
+                PackageBuildState::Building(code) => {
+                    if previous_code != Some(code) {
+                        if previous_code.is_some() {
+                            outputln!("Build status is now '{}'...", code);
+                        } else {
+                            outputln!("Monitoring build, current status is '{}'...", code);
+                        }
+                        previous_code = Some(code);
+                    }
+
                     tokio::time::sleep(options.sleep_on_building).await;
                 }
                 PackageBuildState::Dirty => {
@@ -491,7 +501,7 @@ mod tests {
         );
 
         let state = assert_ok!(monitor.get_latest_state().await);
-        assert_matches!(state, PackageBuildState::Building);
+        assert_matches!(state, PackageBuildState::Building(PackageCode::Building));
 
         mock.set_package_build_status(
             TEST_PROJECT,

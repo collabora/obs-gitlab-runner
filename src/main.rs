@@ -11,6 +11,7 @@ use crate::handler::{HandlerOptions, ObsJobHandler};
 
 mod artifacts;
 mod binaries;
+mod build_meta;
 mod cleanup;
 mod dsc;
 mod handler;

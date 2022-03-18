@@ -1684,7 +1684,7 @@ checksum = "624a8340c38c1b80fd549087862da4ba43e08858af025b236e509b6649fc13d5"
 [[package]]
 name = "open-build-service-api"
 version = "0.1.0"
-source = "git+https://github.com/refi64/open-build-service-rs?branch=things-3#63890d9df9108d59e7ceac747591913a1677fd35"
+source = "git+https://github.com/refi64/open-build-service-rs?branch=things-4#b6059f549e05ddf0a0f33bfae5f088592f9587ed"
 dependencies = [
  "base16ct",
  "bytes",
@@ -1702,7 +1702,7 @@ dependencies = [
 [[package]]
 name = "open-build-service-mock"
 version = "0.1.0"
-source = "git+https://github.com/refi64/open-build-service-rs?branch=things-3#63890d9df9108d59e7ceac747591913a1677fd35"
+source = "git+https://github.com/refi64/open-build-service-rs?branch=things-4#b6059f549e05ddf0a0f33bfae5f088592f9587ed"
 dependencies = [
  "base16ct",
  "http-types",

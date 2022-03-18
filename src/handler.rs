@@ -26,6 +26,7 @@ use tracing::{debug, error, instrument};
 use crate::{
     artifacts::{save_to_tempfile, ArtifactDirectory},
     binaries::download_binaries,
+    build_meta::{BuildMeta, RepoArch},
     cleanup::cleanup_branch,
     monitor::{ObsMonitor, PackageCompletion, PackageMonitoringOptions},
     pipeline::{generate_monitor_pipeline, GeneratePipelineOptions},
@@ -118,15 +119,17 @@ struct Command {
     action: Action,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct ObsBuildInfo {
     project: String,
     package: String,
     rev: Option<String>,
     is_branched: bool,
+    enabled_repos: Vec<RepoArch>,
 }
 
 impl ObsBuildInfo {
+    #[instrument]
     fn save(&self) -> Result<File> {
         let mut file = tempfile::tempfile().wrap_err("Failed to create build info file")?;
         serde_json::to_writer(&mut file, self).wrap_err("Failed to write build info file")?;
@@ -240,38 +243,28 @@ impl ObsJobHandler {
             self,
         )
         .await?;
+
         let result = uploader.upload_package().await;
 
-        // TODO: filter out disabled repos (technically we can just catch those
-        // in the monitor though?)
         let build_info = ObsBuildInfo {
             project: uploader.project().to_owned(),
             package: uploader.package().to_owned(),
-            rev: result
-                .as_ref()
-                .map(|r| Some(r.rev.clone()))
-                .unwrap_or_default(),
+            rev: None,
             is_branched,
+            enabled_repos: vec![],
         };
 
         let build_info_2 = build_info.clone();
-        match tokio::task::spawn_blocking(move || build_info_2.save())
-            .await
-            .map_err(|e| e.into())
-            .and_then(|r| r)
-        {
-            Ok(file) => {
-                self.artifacts
-                    .insert(args.build_info_out, AsyncFile::from_std(file));
-            }
-            Err(err) => {
-                error!(gitab.output = true, "Failed to save build info: {:?}", err);
-            }
-        }
+        let build_info_file = tokio::task::spawn_blocking(move || build_info_2.save()).await??;
 
-        // Now that build-info.json is saved, we can check the result of the
-        // actual upload.
+        self.artifacts.insert(
+            args.build_info_out.clone(),
+            AsyncFile::from_std(build_info_file),
+        );
+
         let result = result?;
+        let build_meta =
+            BuildMeta::get(&self.client, &build_info.project, &build_info.package).await?;
 
         if result.unchanged {
             outputln!("Package unchanged at revision {}.", result.rev);
@@ -291,6 +284,15 @@ impl ObsJobHandler {
             outputln!("Package uploaded with revision {}.", result.rev);
         }
 
+        let build_info = ObsBuildInfo {
+            rev: Some(result.rev),
+            enabled_repos: build_meta.enabled_repos,
+            ..build_info
+        };
+        let build_info_file = tokio::task::spawn_blocking(move || build_info.save()).await??;
+        self.artifacts
+            .insert(args.build_info_out, AsyncFile::from_std(build_info_file));
+
         Ok(())
     }
 
@@ -301,12 +303,12 @@ impl ObsJobHandler {
             .wrap_err("Failed to parse provided build info file")?;
 
         let file = generate_monitor_pipeline(
-            self.client.clone(),
             &build_info.project,
             &build_info.package,
             &build_info
                 .rev
                 .ok_or_else(|| eyre!("Build revision was not set"))?,
+            &build_info.enabled_repos,
             GeneratePipelineOptions {
                 build_results_dir: args.build_results_dir.to_string(),
                 prefix: args.job_prefix,
@@ -847,6 +849,19 @@ mod tests {
 
         context.obs_mock.add_project(TEST_PROJECT.to_owned());
 
+        context.obs_mock.add_or_update_repository(
+            TEST_PROJECT,
+            TEST_REPO.to_owned(),
+            TEST_ARCH_1.to_owned(),
+            MockRepositoryCode::Finished,
+        );
+        context.obs_mock.add_or_update_repository(
+            TEST_PROJECT,
+            TEST_REPO.to_owned(),
+            TEST_ARCH_2.to_owned(),
+            MockRepositoryCode::Finished,
+        );
+
         let artifacts = put_artifacts(
             context,
             [
@@ -904,8 +919,6 @@ mod tests {
         run_obs_handler(context).await;
         assert_eq!(MockJobState::Success, upload.state());
 
-        // Branches will never trigger explicit rebuilds, because the branch
-        // operation itself results in a new commit.
         if test == UploadTest::Rebuild {
             context.obs_mock.add_or_update_repository(
                 &uploaded_project,
@@ -913,6 +926,20 @@ mod tests {
                 TEST_ARCH_1.to_owned(),
                 MockRepositoryCode::Building,
             );
+            // Also test disabling repos, since we now have an existing package
+            // to modify the metadata of.
+            context.obs_mock.set_package_metadata(
+                TEST_PROJECT,
+                TEST_PACKAGE_1,
+                MockPackageOptions {
+                    disabled: vec![MockPackageDisabledBuild {
+                        repository: None,
+                        arch: Some(TEST_ARCH_2.to_owned()),
+                    }],
+                    ..Default::default()
+                },
+            );
+
             context.obs_mock.set_package_build_status_for_rebuilds(
                 &uploaded_project,
                 MockBuildStatus::new(MockPackageCode::Broken),
@@ -983,13 +1010,26 @@ mod tests {
         }
 
         let results = get_job_artifacts(&upload);
-        let build_info: ObsBuildInfo =
+        let mut build_info: ObsBuildInfo =
             serde_json::from_slice(&results.get(DEFAULT_BUILD_INFO).unwrap()).unwrap();
 
         assert_eq!(build_info.project, uploaded_project);
         assert_eq!(build_info.package, TEST_PACKAGE_1);
         assert_some!(build_info.rev.as_deref());
         assert_eq!(build_info.is_branched, test == UploadTest::Branch);
+        build_info.enabled_repos.sort_by(|a, b| a.arch.cmp(&b.arch));
+
+        assert_eq!(
+            build_info.enabled_repos.len(),
+            if test == UploadTest::Rebuild { 1 } else { 2 }
+        );
+        assert_eq!(build_info.enabled_repos[0].repo, TEST_REPO);
+        assert_eq!(build_info.enabled_repos[0].arch, TEST_ARCH_1);
+
+        if test != UploadTest::Rebuild {
+            assert_eq!(build_info.enabled_repos[1].repo, TEST_REPO);
+            assert_eq!(build_info.enabled_repos[1].arch, TEST_ARCH_2);
+        }
 
         let mut dir = assert_ok!(
             context
@@ -1069,46 +1109,6 @@ mod tests {
             log_vs_limit
         );
 
-        context.obs_mock.add_or_update_repository(
-            &build_info.project,
-            TEST_REPO.to_owned(),
-            TEST_ARCH_1.to_owned(),
-            MockRepositoryCode::Finished,
-        );
-        context.obs_mock.set_package_build_status(
-            &build_info.project,
-            TEST_REPO,
-            TEST_ARCH_1,
-            TEST_PACKAGE_1.to_owned(),
-            MockBuildStatus::new(if success {
-                MockPackageCode::Succeeded
-            } else {
-                MockPackageCode::Failed
-            }),
-        );
-        context.obs_mock.add_completed_build_log(
-            &build_info.project,
-            TEST_REPO,
-            TEST_ARCH_1,
-            TEST_PACKAGE_1.to_owned(),
-            MockBuildLog::new(log_contents.to_owned()),
-            success,
-        );
-        context.obs_mock.set_package_binaries(
-            &build_info.project,
-            TEST_REPO,
-            TEST_ARCH_1,
-            TEST_PACKAGE_1.to_owned(),
-            [(
-                TEST_BUILD_RESULT.to_owned(),
-                MockBinary {
-                    contents: TEST_BUILD_RESULT_CONTENTS.to_vec(),
-                    mtime: SystemTime::now(),
-                },
-            )]
-            .into(),
-        );
-
         let generate = enqueue_job(
             context,
             JobSpec {
@@ -1122,102 +1122,151 @@ mod tests {
         run_obs_handler(context).await;
         assert_eq!(generate.state(), MockJobState::Success);
 
-        let monitor_job_name = format!(
-            "{}-{}-{}",
-            DEFAULT_PIPELINE_JOB_PREFIX, TEST_REPO, TEST_ARCH_1
-        );
-
         let results = get_job_artifacts(&generate);
         let pipeline_yaml: serde_yaml::Value = assert_ok!(serde_yaml::from_slice(
             &results.get(DEFAULT_MONITOR_PIPELINE).unwrap()
         ));
-        let monitor_map = pipeline_yaml
-            .as_mapping()
-            .unwrap()
-            .get(&monitor_job_name.as_str().into())
-            .unwrap()
-            .as_mapping()
-            .unwrap();
+        let pipeline_map = pipeline_yaml.as_mapping().unwrap();
 
-        let a = assert_some!(monitor_map.get(&"a".into()));
-        assert_eq!(a, 1);
+        assert_eq!(pipeline_map.len(), build_info.enabled_repos.len());
 
-        let variables = monitor_map
-            .get(&"variables".into())
-            .unwrap()
-            .as_mapping()
-            .unwrap()
-            .iter()
-            .map(|(k, v)| {
-                (
-                    k.as_str().unwrap().to_owned(),
-                    v.as_str().unwrap().to_owned(),
-                )
-            })
-            .collect::<HashMap<_, _>>();
+        for repo in &build_info.enabled_repos {
+            // Sanity check this, even though test_upload should have already
+            // checked it.
+            assert_eq!(repo.repo, TEST_REPO);
+            assert!(
+                repo.arch == TEST_ARCH_1 || repo.arch == TEST_ARCH_2,
+                "unexpected arch '{}'",
+                repo.arch
+            );
 
-        let script = monitor_map
-            .get(&"script".into())
-            .unwrap()
-            .as_sequence()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap().to_owned())
-            .collect::<Vec<_>>();
+            context.obs_mock.set_package_build_status(
+                &build_info.project,
+                TEST_REPO,
+                &repo.arch,
+                TEST_PACKAGE_1.to_owned(),
+                MockBuildStatus::new(if success {
+                    MockPackageCode::Succeeded
+                } else {
+                    MockPackageCode::Failed
+                }),
+            );
+            context.obs_mock.add_completed_build_log(
+                &build_info.project,
+                TEST_REPO,
+                &repo.arch,
+                TEST_PACKAGE_1.to_owned(),
+                MockBuildLog::new(log_contents.to_owned()),
+                success,
+            );
+            context.obs_mock.set_package_binaries(
+                &build_info.project,
+                TEST_REPO,
+                &repo.arch,
+                TEST_PACKAGE_1.to_owned(),
+                [(
+                    TEST_BUILD_RESULT.to_owned(),
+                    MockBinary {
+                        contents: TEST_BUILD_RESULT_CONTENTS.to_vec(),
+                        mtime: SystemTime::now(),
+                    },
+                )]
+                .into(),
+            );
 
-        let monitor = enqueue_job(
-            context,
-            JobSpec {
-                name: monitor_job_name.clone(),
-                dependencies: vec![upload.clone()],
-                variables: variables.clone(),
-                script: script.clone(),
-                ..Default::default()
-            },
-        );
+            let monitor_job_name = format!(
+                "{}-{}-{}",
+                DEFAULT_PIPELINE_JOB_PREFIX, TEST_REPO, &repo.arch
+            );
 
-        run_obs_handler(context).await;
-        assert_eq!(
-            monitor.state(),
-            if success && log_test != MonitorLogTest::Unavailable {
-                MockJobState::Success
-            } else {
-                MockJobState::Failed
-            }
-        );
+            let monitor_map = pipeline_yaml
+                .as_mapping()
+                .unwrap()
+                .get(&monitor_job_name.as_str().into())
+                .unwrap()
+                .as_mapping()
+                .unwrap();
 
-        let job_log = String::from_utf8_lossy(&monitor.log()).into_owned();
-        assert_eq!(
-            job_log.contains("unavailable"),
-            log_test == MonitorLogTest::Unavailable
-        );
+            let a = assert_some!(monitor_map.get(&"a".into()));
+            assert_eq!(a, 1);
 
-        assert_eq!(
-            job_log.contains(&log_contents),
-            !success && log_test == MonitorLogTest::Short
-        );
-
-        if !success && log_test == MonitorLogTest::Long {
-            let log_bytes = log_contents.as_bytes();
-            let truncated_log_bytes = &log_bytes[log_bytes.len() - (TEST_LOG_TAIL as usize)..];
-            assert!(job_log.contains(String::from_utf8_lossy(truncated_log_bytes).as_ref()));
-        }
-
-        if log_test != MonitorLogTest::Unavailable {
-            let results = get_job_artifacts(&monitor);
-
-            let full_log = results.get(DEFAULT_BUILD_LOG).unwrap();
-            assert_eq!(log_contents, String::from_utf8_lossy(full_log));
-
-            if success {
-                let build_result = results
-                    .get(
-                        Utf8Path::new(DEFAULT_BUILD_RESULTS_DIR)
-                            .join(TEST_BUILD_RESULT)
-                            .as_str(),
+            let variables = monitor_map
+                .get(&"variables".into())
+                .unwrap()
+                .as_mapping()
+                .unwrap()
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.as_str().unwrap().to_owned(),
+                        v.as_str().unwrap().to_owned(),
                     )
-                    .unwrap();
-                assert_eq!(TEST_BUILD_RESULT_CONTENTS, &build_result[..]);
+                })
+                .collect::<HashMap<_, _>>();
+
+            let script = monitor_map
+                .get(&"script".into())
+                .unwrap()
+                .as_sequence()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+
+            let monitor = enqueue_job(
+                context,
+                JobSpec {
+                    name: monitor_job_name.clone(),
+                    dependencies: vec![upload.clone()],
+                    variables: variables.clone(),
+                    script: script.clone(),
+                    ..Default::default()
+                },
+            );
+
+            run_obs_handler(context).await;
+            assert_eq!(
+                monitor.state(),
+                if success && log_test != MonitorLogTest::Unavailable {
+                    MockJobState::Success
+                } else {
+                    MockJobState::Failed
+                }
+            );
+
+            let job_log = String::from_utf8_lossy(&monitor.log()).into_owned();
+            assert_eq!(
+                job_log.contains("unavailable"),
+                log_test == MonitorLogTest::Unavailable
+            );
+
+            assert_eq!(
+                job_log.contains(&log_contents),
+                !success && log_test == MonitorLogTest::Short
+            );
+
+            if !success && log_test == MonitorLogTest::Long {
+                let log_bytes = log_contents.as_bytes();
+                let truncated_log_bytes = &log_bytes[log_bytes.len() - (TEST_LOG_TAIL as usize)..];
+                assert!(job_log.contains(String::from_utf8_lossy(truncated_log_bytes).as_ref()));
+            }
+
+            if log_test != MonitorLogTest::Unavailable {
+                let results = get_job_artifacts(&monitor);
+
+                let full_log = results.get(DEFAULT_BUILD_LOG).unwrap();
+                assert_eq!(log_contents, String::from_utf8_lossy(full_log));
+
+                if success {
+                    let build_result = results
+                        .get(
+                            Utf8Path::new(DEFAULT_BUILD_RESULTS_DIR)
+                                .join(TEST_BUILD_RESULT)
+                                .as_str(),
+                        )
+                        .unwrap();
+                    assert_eq!(TEST_BUILD_RESULT_CONTENTS, &build_result[..]);
+                }
             }
         }
     }

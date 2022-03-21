@@ -4,7 +4,7 @@ name: CI
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}
+  IMAGE: $REGISTRY/${{ github.repository }}
 
 jobs:
   check:

@@ -23,8 +23,9 @@ pub enum PackageCompletion {
 
 #[derive(Debug)]
 enum PackageBuildState {
-    Building(obs::PackageCode),
+    PendingStatusPosted,
     Dirty,
+    Building(obs::PackageCode),
     Completed(PackageCompletion),
 }
 
@@ -35,9 +36,21 @@ pub struct LogFile {
 }
 
 #[derive(Clone, Debug)]
+pub struct MonitoredPackage {
+    pub project: String,
+    pub package: String,
+    pub repository: String,
+    pub arch: String,
+    pub rev: String,
+    pub srcmd5: String,
+    pub prev_bcnt_for_commit: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 pub struct PackageMonitoringOptions {
     pub sleep_on_building: Duration,
     pub sleep_on_dirty: Duration,
+    pub sleep_on_old_status: Duration,
 }
 
 impl Default for PackageMonitoringOptions {
@@ -45,6 +58,7 @@ impl Default for PackageMonitoringOptions {
         PackageMonitoringOptions {
             sleep_on_building: Duration::from_secs(10),
             sleep_on_dirty: Duration::from_secs(30),
+            sleep_on_old_status: Duration::from_secs(15),
         }
     }
 }
@@ -55,56 +69,20 @@ pub struct ObsMonitor {
     #[derivative(Debug = "ignore")]
     client: obs::Client,
 
-    project: String,
-    package: String,
-    repository: String,
-    arch: String,
-
-    rev: String,
-    srcmd5: String,
+    package: MonitoredPackage,
 }
 
 impl ObsMonitor {
-    pub async fn new(
-        client: obs::Client,
-        project: String,
-        package: String,
-        repository: String,
-        arch: String,
-        rev: String,
-    ) -> Result<ObsMonitor> {
-        let dir = retry_request(|| async {
-            client
-                .project(project.clone())
-                .package(package.clone())
-                .list(Some(&rev))
-                .await
-        })
-        .await?;
-
-        let srcmd5 = if let Some(link) = dir.linkinfo.into_iter().next() {
-            link.xsrcmd5
-        } else {
-            dir.srcmd5
-        };
-
-        Ok(ObsMonitor {
-            client,
-            project,
-            package,
-            repository,
-            arch,
-            rev,
-            srcmd5,
-        })
+    pub fn new(client: obs::Client, package: MonitoredPackage) -> ObsMonitor {
+        ObsMonitor { client, package }
     }
 
     #[instrument(skip(self))]
     async fn get_latest_revision(&self) -> Result<String> {
         let dir = retry_request(|| async {
             self.client
-                .project(self.project.clone())
-                .package(self.package.clone())
+                .project(self.package.project.clone())
+                .package(self.package.package.clone())
                 .list(None)
                 .await
         })
@@ -115,35 +93,56 @@ impl ObsMonitor {
     #[instrument(skip(self))]
     async fn get_latest_state(&self) -> Result<PackageBuildState> {
         let latest_rev = self.get_latest_revision().await?;
-        if latest_rev != self.rev {
+        if latest_rev != self.package.rev {
             return Ok(PackageBuildState::Completed(PackageCompletion::Superceded));
         }
 
-        let all_results = retry_request(|| async {
-            self.client
-                .project(self.project.clone())
-                .package(self.package.clone())
-                .result()
-                .await
-        })
-        .await?;
+        let clinet_package = self
+            .client
+            .project(self.package.project.clone())
+            .package(self.package.package.clone());
+
+        let all_results = retry_request(|| async { clinet_package.result().await }).await?;
 
         // TODO: filter this in the API call instead of afterwards
         let result = all_results
             .results
             .into_iter()
-            .find(|r| r.arch == self.arch)
-            .ok_or_else(|| eyre!("Failed to find results for architecture {}", self.arch))?;
+            .find(|r| r.arch == self.package.arch)
+            .ok_or_else(|| {
+                eyre!(
+                    "Failed to find results for architecture {}",
+                    self.package.arch
+                )
+            })?;
         if result.dirty {
             return Ok(PackageBuildState::Dirty);
         }
 
         let status = result
-            .get_status(&self.package)
-            .ok_or_else(|| eyre!("Package {} missing", self.package))?;
+            .get_status(&self.package.package)
+            .ok_or_else(|| eyre!("Package {} missing", self.package.package))?;
         if status.dirty {
             Ok(PackageBuildState::Dirty)
         } else if status.code.is_final() {
+            // There is a small gap after a commit where the previous build
+            // status is still posted. To ensure the build that's now final is
+            // actually our own, check the build history to make sure there is
+            // a build *newer* that the last bcnt we have recorded.
+
+            if let Some(prev_bcnt_for_commit) = &self.package.prev_bcnt_for_commit {
+                let history = retry_request(|| async {
+                    clinet_package
+                        .history(&self.package.repository, &self.package.arch)
+                        .await
+                })
+                .await
+                .wrap_err("Failed to get history")?;
+                if history.entries.last().map(|e| &e.bcnt) == Some(prev_bcnt_for_commit) {
+                    return Ok(PackageBuildState::PendingStatusPosted);
+                }
+            }
+
             Ok(PackageBuildState::Completed(match status.code {
                 obs::PackageCode::Disabled | obs::PackageCode::Excluded => {
                     PackageCompletion::Disabled
@@ -158,7 +157,7 @@ impl ObsMonitor {
 
     #[instrument(skip(self, content))]
     fn check_log_md5(&self, content: &str) -> Result<()> {
-        let needle = format!("srcmd5 '{}'", self.srcmd5);
+        let needle = format!("srcmd5 '{}'", self.package.srcmd5);
         ensure!(
             content.contains(&needle),
             "Build logs are unavailable (overwritten by a later build revision?)"
@@ -178,10 +177,10 @@ impl ObsMonitor {
             .map_err(|_| eyre!("Failed to modify log URL"))?
             .push("package")
             .push("live_build_log")
-            .push(&self.project)
-            .push(&self.package)
-            .push(&self.repository)
-            .push(&self.arch);
+            .push(&self.package.project)
+            .push(&self.package.package)
+            .push(&self.package.repository)
+            .push(&self.package.arch);
 
         outputln!("Live build log: {}", log_url);
 
@@ -205,6 +204,10 @@ impl ObsMonitor {
                     outputln!("Package is dirty, trying again later...");
                     tokio::time::sleep(options.sleep_on_dirty).await;
                 }
+                PackageBuildState::PendingStatusPosted => {
+                    outputln!("Old build status still posted, trying again later...");
+                    tokio::time::sleep(options.sleep_on_old_status).await;
+                }
                 PackageBuildState::Completed(reason) => {
                     return Ok(reason);
                 }
@@ -222,9 +225,9 @@ impl ObsMonitor {
             );
             let mut stream = self
                 .client
-                .project(self.project.clone())
-                .package(self.package.clone())
-                .log(&self.repository, &self.arch)
+                .project(self.package.project.clone())
+                .package(self.package.package.clone())
+                .log(&self.package.repository, &self.package.arch)
                 .stream(obs::PackageLogStreamOptions::default())?;
 
             while let Some(bytes) = stream.next().await {
@@ -293,16 +296,17 @@ mod tests {
         );
 
         let client = create_default_client(&mock);
-        let monitor = assert_ok!(
-            ObsMonitor::new(
-                client.clone(),
-                TEST_PROJECT.to_owned(),
-                TEST_PACKAGE_1.to_owned(),
-                TEST_REPO.to_owned(),
-                TEST_ARCH_1.to_owned(),
-                "1".to_owned(),
-            )
-            .await
+        let monitor = ObsMonitor::new(
+            client.clone(),
+            MonitoredPackage {
+                project: TEST_PROJECT.to_owned(),
+                package: TEST_PACKAGE_1.to_owned(),
+                repository: TEST_REPO.to_owned(),
+                arch: TEST_ARCH_1.to_owned(),
+                rev: "1".to_owned(),
+                srcmd5: srcmd5.clone(),
+                prev_bcnt_for_commit: None,
+            },
         );
 
         assert_ok!(monitor.check_log_md5(&format!("srcmd5 '{}'", srcmd5)));
@@ -321,16 +325,17 @@ mod tests {
             },
         );
 
-        let monitor = assert_ok!(
-            ObsMonitor::new(
-                client,
-                TEST_PROJECT.to_owned(),
-                TEST_PACKAGE_2.to_owned(),
-                TEST_REPO.to_owned(),
-                TEST_ARCH_1.to_owned(),
-                "1".to_owned(),
-            )
-            .await
+        let monitor = ObsMonitor::new(
+            client,
+            MonitoredPackage {
+                project: TEST_PROJECT.to_owned(),
+                package: TEST_PACKAGE_2.to_owned(),
+                repository: TEST_REPO.to_owned(),
+                arch: TEST_ARCH_1.to_owned(),
+                rev: "1".to_owned(),
+                srcmd5: branch_xsrcmd5.clone(),
+                prev_bcnt_for_commit: None,
+            },
         );
 
         assert_ok!(monitor.check_log_md5(&format!("srcmd5 '{}'", branch_xsrcmd5)));
@@ -384,16 +389,17 @@ mod tests {
         );
 
         let client = create_default_client(&mock);
-        let monitor = assert_ok!(
-            ObsMonitor::new(
-                client,
-                TEST_PROJECT.to_owned(),
-                TEST_PACKAGE_1.to_owned(),
-                TEST_REPO.to_owned(),
-                TEST_ARCH_1.to_owned(),
-                "1".to_owned(),
-            )
-            .await
+        let monitor = ObsMonitor::new(
+            client,
+            MonitoredPackage {
+                project: TEST_PROJECT.to_owned(),
+                package: TEST_PACKAGE_1.to_owned(),
+                repository: TEST_REPO.to_owned(),
+                arch: TEST_ARCH_1.to_owned(),
+                rev: "1".to_owned(),
+                srcmd5: srcmd5.clone(),
+                prev_bcnt_for_commit: None,
+            },
         );
 
         let mut log_file = assert_ok!(monitor.download_build_log().await);
@@ -421,6 +427,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_latest_state() {
+        let srcmd5 = random_md5();
+
         let mock = create_default_mock().await;
 
         mock.add_project(TEST_PROJECT.to_owned());
@@ -433,7 +441,10 @@ mod tests {
         mock.add_package_revision(
             TEST_PROJECT,
             TEST_PACKAGE_1,
-            MockRevisionOptions::default(),
+            MockRevisionOptions {
+                srcmd5: srcmd5.clone(),
+                ..Default::default()
+            },
             HashMap::new(),
         );
 
@@ -474,16 +485,17 @@ mod tests {
         );
 
         let client = create_default_client(&mock);
-        let monitor = assert_ok!(
-            ObsMonitor::new(
-                client.clone(),
-                TEST_PROJECT.to_owned(),
-                TEST_PACKAGE_1.to_owned(),
-                TEST_REPO.to_owned(),
-                TEST_ARCH_1.to_owned(),
-                "1".to_owned(),
-            )
-            .await
+        let monitor = ObsMonitor::new(
+            client.clone(),
+            MonitoredPackage {
+                project: TEST_PROJECT.to_owned(),
+                package: TEST_PACKAGE_1.to_owned(),
+                repository: TEST_REPO.to_owned(),
+                arch: TEST_ARCH_1.to_owned(),
+                rev: "1".to_owned(),
+                srcmd5: srcmd5.clone(),
+                prev_bcnt_for_commit: None,
+            },
         );
 
         let state = assert_ok!(monitor.get_latest_state().await);
@@ -548,6 +560,92 @@ mod tests {
         assert_matches!(
             state,
             PackageBuildState::Completed(PackageCompletion::Superceded)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ignores_status_for_prev_bcnt() {
+        let srcmd5 = random_md5();
+        let bcnt_1 = 1;
+        let bcnt_2 = 2;
+
+        let mock = create_default_mock().await;
+
+        mock.add_project(TEST_PROJECT.to_owned());
+        mock.add_new_package(
+            TEST_PROJECT,
+            TEST_PACKAGE_1.to_owned(),
+            MockPackageOptions::default(),
+        );
+
+        mock.add_package_revision(
+            TEST_PROJECT,
+            TEST_PACKAGE_1,
+            MockRevisionOptions {
+                srcmd5: srcmd5.clone(),
+                ..Default::default()
+            },
+            HashMap::new(),
+        );
+
+        mock.add_or_update_repository(
+            TEST_PROJECT,
+            TEST_REPO.to_owned(),
+            TEST_ARCH_1.to_owned(),
+            MockRepositoryCode::Building,
+        );
+        mock.set_package_build_status(
+            TEST_PROJECT,
+            TEST_REPO,
+            TEST_ARCH_1,
+            TEST_PACKAGE_1.to_owned(),
+            MockBuildStatus::new(MockPackageCode::Succeeded),
+        );
+        mock.add_build_history(
+            TEST_PROJECT,
+            TEST_REPO,
+            TEST_ARCH_1,
+            TEST_PACKAGE_1.to_owned(),
+            MockBuildHistoryEntry {
+                srcmd5: srcmd5.clone(),
+                bcnt: bcnt_1,
+                ..Default::default()
+            },
+        );
+
+        let client = create_default_client(&mock);
+        let monitor = ObsMonitor::new(
+            client,
+            MonitoredPackage {
+                project: TEST_PROJECT.to_owned(),
+                package: TEST_PACKAGE_1.to_owned(),
+                repository: TEST_REPO.to_owned(),
+                arch: TEST_ARCH_1.to_owned(),
+                rev: "1".to_owned(),
+                srcmd5: srcmd5.clone(),
+                prev_bcnt_for_commit: Some(bcnt_1.to_string()),
+            },
+        );
+
+        let state = assert_ok!(monitor.get_latest_state().await);
+        assert_matches!(state, PackageBuildState::PendingStatusPosted);
+
+        mock.add_build_history(
+            TEST_PROJECT,
+            TEST_REPO,
+            TEST_ARCH_1,
+            TEST_PACKAGE_1.to_owned(),
+            MockBuildHistoryEntry {
+                srcmd5: srcmd5.clone(),
+                bcnt: bcnt_2,
+                ..Default::default()
+            },
+        );
+
+        let state = assert_ok!(monitor.get_latest_state().await);
+        assert_matches!(
+            state,
+            PackageBuildState::Completed(PackageCompletion::Succeeded)
         );
     }
 }

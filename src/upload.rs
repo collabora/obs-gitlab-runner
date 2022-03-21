@@ -54,15 +54,13 @@ impl Default for ObsUploaderOptions {
 #[derive(Debug)]
 pub struct UploadResult {
     pub rev: String,
+    pub build_srcmd5: String,
     pub unchanged: bool,
 }
 
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub struct ObsUploader<'artifacts, Artifacts>
-where
-    Artifacts: ArtifactDirectory,
-{
+pub struct ObsUploader {
     #[derivative(Debug = "ignore")]
     client: obs::Client,
 
@@ -74,23 +72,17 @@ where
     dsc_contents: Vec<u8>,
     dsc: Dsc,
 
-    #[derivative(Debug = "ignore")]
-    artifacts: &'artifacts Artifacts,
-
     options: ObsUploaderOptions,
 }
 
-impl<'artifacts, Artifacts> ObsUploader<'artifacts, Artifacts>
-where
-    Artifacts: ArtifactDirectory,
-{
+impl ObsUploader {
     pub async fn prepare<'a>(
         client: obs::Client,
         mut project: String,
         branch_to: Option<String>,
         dsc_path: Utf8PathBuf,
-        artifacts: &'a Artifacts,
-    ) -> Result<ObsUploader<'a, Artifacts>> {
+        artifacts: &impl ArtifactDirectory,
+    ) -> Result<ObsUploader> {
         let dsc_contents = artifacts
             .get_data(dsc_path.as_str())
             .await
@@ -104,9 +96,9 @@ where
             outputln!(
                 "Branching {}/{} -> {}/{}...",
                 project,
-                dsc.source,
+                package,
                 branch_to,
-                dsc.source
+                package
             );
 
             let mut options = obs::BranchOptions {
@@ -143,7 +135,6 @@ where
             dsc_path,
             dsc_contents,
             dsc,
-            artifacts,
             options: Default::default(),
         })
     }
@@ -233,13 +224,15 @@ where
         Ok(meta.md5)
     }
 
-    #[instrument(skip(self))]
-    async fn upload_file(&self, root: &Utf8Path, filename: &str) -> Result<()> {
+    #[instrument(skip(self, artifacts))]
+    async fn upload_file(
+        &self,
+        root: &Utf8Path,
+        filename: &str,
+        artifacts: &impl ArtifactDirectory,
+    ) -> Result<()> {
         debug!("Uploading file");
-        let file = self
-            .artifacts
-            .get_file(root.join(filename).as_str())
-            .await?;
+        let file = artifacts.get_file(root.join(filename).as_str()).await?;
 
         retry_large_request(|| {
             file.try_clone().then(|file| async {
@@ -258,12 +251,13 @@ where
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, artifacts))]
     async fn commit(
         &self,
         commit_message: &str,
         root: &Utf8Path,
         files: HashMap<String, Md5String>,
+        artifacts: &impl ArtifactDirectory,
     ) -> Result<String> {
         let mut commit_files = obs::CommitFileList::new();
         for (name, md5) in files {
@@ -307,15 +301,15 @@ where
                     attempt += 1;
 
                     for entry in missing.entries {
-                        self.upload_file(root, &entry.name).await?;
+                        self.upload_file(root, &entry.name, artifacts).await?;
                     }
                 }
             }
         }
     }
 
-    #[instrument]
-    pub async fn upload_package(&self) -> Result<UploadResult> {
+    #[instrument(skip(artifacts))]
+    pub async fn upload_package(&self, artifacts: &impl ArtifactDirectory) -> Result<UploadResult> {
         let dsc_parent = self
             .dsc_path
             .parent()
@@ -351,23 +345,44 @@ where
 
         trace!(?files_to_commit, ?present_files);
 
-        Ok(if files_to_commit != present_files {
-            UploadResult {
-                rev: self
-                    .commit(dsc_filename, dsc_parent, files_to_commit)
+        let (rev, unchanged) = if files_to_commit != present_files {
+            (
+                self.commit(dsc_filename, dsc_parent, files_to_commit, artifacts)
                     .await?,
-                unchanged: false,
-            }
+                false,
+            )
         } else {
-            UploadResult {
+            (
                 // SAFETY: .unwrap() would only fail if the revision is unset, which
                 // would only happen if this were the *empty* zero revision. Because
                 // we always try to add the _meta file, our files to commit is
                 // *never* empty, thus the present revision cannot be empty for this
                 // block to be entered.
-                rev: dir.rev.unwrap(),
-                unchanged: true,
-            }
+                dir.rev.unwrap(),
+                true,
+            )
+        };
+
+        let current_dir = retry_request(|| async {
+            self.client
+                .project(self.project.clone())
+                .package(self.package.clone())
+                .list(Some(&rev))
+                .await
+        })
+        .instrument(info_span!("upload_package:list-rev", %rev))
+        .await?;
+
+        let build_srcmd5 = if let Some(link) = current_dir.linkinfo.into_iter().next() {
+            link.xsrcmd5
+        } else {
+            current_dir.srcmd5
+        };
+
+        Ok(UploadResult {
+            rev,
+            build_srcmd5,
+            unchanged,
         })
     }
 }
@@ -510,6 +525,7 @@ mod tests {
                     "commit",
                     "".into(),
                     [(test1_file.to_owned(), test1_md5.to_owned())].into(),
+                    &artifacts,
                 )
                 .await
         );
@@ -531,6 +547,7 @@ mod tests {
                         (test2_file.to_owned(), test2_md5.to_owned()),
                     ]
                     .into(),
+                    &artifacts,
                 )
                 .await
         );
@@ -554,6 +571,7 @@ mod tests {
                     "message",
                     "".into(),
                     [(test2_file.to_owned(), test2_md5.to_owned())].into(),
+                    &artifacts,
                 )
                 .await
         );
@@ -678,7 +696,7 @@ mod tests {
             )
             .await
         );
-        let result = assert_ok!(uploader.upload_package().await);
+        let result = assert_ok!(uploader.upload_package(&artifacts).await);
         assert_eq!(result.rev, "1");
         assert!(!result.unchanged);
 
@@ -691,6 +709,8 @@ mod tests {
         assert_eq!(dir.entries[1].md5, dsc1_md5);
         assert_eq!(dir.entries[2].name, test1_file);
         assert_eq!(dir.entries[2].md5, test1_md5_a);
+
+        assert_eq!(dir.srcmd5, result.build_srcmd5);
 
         let revisions = assert_ok!(package_1.revisions().await);
         let revision = assert_some!(revisions.revisions.last());
@@ -729,7 +749,7 @@ mod tests {
             )
             .await
         );
-        let result = assert_ok!(uploader.upload_package().await);
+        let result = assert_ok!(uploader.upload_package(&artifacts).await);
         assert_eq!(result.rev, "3");
         assert!(!result.unchanged);
 
@@ -746,6 +766,8 @@ mod tests {
         assert_eq!(dir.entries[3].md5, test1_md5_a);
         assert_eq!(dir.entries[4].name, test2_file);
         assert_eq!(dir.entries[4].md5, test2_md5);
+
+        assert_eq!(dir.srcmd5, result.build_srcmd5);
 
         // Change the contents of one of the files.
 
@@ -764,7 +786,7 @@ mod tests {
             )
             .await
         );
-        let result = assert_ok!(uploader.upload_package().await);
+        let result = assert_ok!(uploader.upload_package(&artifacts).await);
         assert_eq!(result.rev, "4");
         assert!(!result.unchanged);
 
@@ -782,6 +804,8 @@ mod tests {
         assert_eq!(dir.entries[4].name, test2_file);
         assert_eq!(dir.entries[4].md5, test2_md5);
 
+        assert_eq!(dir.srcmd5, result.build_srcmd5);
+
         // Remove the second test file.
 
         let uploader = assert_ok!(
@@ -794,7 +818,7 @@ mod tests {
             )
             .await
         );
-        let result = assert_ok!(uploader.upload_package().await);
+        let result = assert_ok!(uploader.upload_package(&artifacts).await);
         assert_eq!(result.rev, "5");
         assert!(!result.unchanged);
 
@@ -812,9 +836,11 @@ mod tests {
 
         // Re-upload with no changes and ensure the old commit is returned.
 
-        let result = assert_ok!(uploader.upload_package().await);
+        let result = assert_ok!(uploader.upload_package(&artifacts).await);
         assert_eq!(result.rev, "5");
         assert!(result.unchanged);
+
+        assert_eq!(dir.srcmd5, result.build_srcmd5);
 
         // Upload to a new branch.
 
@@ -830,7 +856,7 @@ mod tests {
             .await
         );
         assert_eq!(uploader.project(), branched_project);
-        let result = assert_ok!(uploader.upload_package().await);
+        let result = assert_ok!(uploader.upload_package(&artifacts).await);
         // TODO: check the revision, once the mock APIs have branches
         // incorporate the origin's history
         assert!(!result.unchanged);
@@ -844,5 +870,7 @@ mod tests {
         );
         // XXX: the mock apis don't set the correct rev values on branch yet
         assert_matches!(dir.rev, Some(_));
+
+        assert_eq!(dir.linkinfo[0].xsrcmd5, result.build_srcmd5);
     }
 }

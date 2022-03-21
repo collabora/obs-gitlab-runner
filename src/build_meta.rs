@@ -1,25 +1,67 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use color_eyre::eyre::{Result, WrapErr};
 use open_build_service_api as obs;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, instrument};
+use tracing::{debug, info_span, instrument, Instrument};
 
 use crate::retry::retry_request;
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RepoArch {
     pub repo: String,
     pub arch: String,
 }
 
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct CommitBuildInfo {
+    pub prev_bcnt_for_commit: Option<String>,
+}
+
+#[derive(Debug)]
 pub struct BuildMeta {
-    pub enabled_repos: Vec<RepoArch>,
+    pub enabled_repos: HashMap<RepoArch, obs::BuildHistory>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildHistoryRetrieval {
+    Full,
+    None,
 }
 
 impl BuildMeta {
     #[instrument(skip(client))]
-    pub async fn get(client: &obs::Client, project: &str, package: &str) -> Result<BuildMeta> {
+    pub async fn get_if_package_exists(
+        client: &obs::Client,
+        project: &str,
+        package: &str,
+        history_retrieval: BuildHistoryRetrieval,
+    ) -> Result<Option<BuildMeta>> {
+        match Self::get(client, project, package, history_retrieval).await {
+            Ok(result) => Ok(Some(result)),
+            Err(e) => {
+                for cause in e.chain() {
+                    if let Some(obs::Error::ApiError(obs::ApiError { code, .. })) =
+                        cause.downcast_ref::<obs::Error>()
+                    {
+                        if code == "unknown_package" {
+                            return Ok(None);
+                        }
+                    }
+                }
+
+                Err(e)
+            }
+        }
+    }
+
+    #[instrument(skip(client))]
+    pub async fn get(
+        client: &obs::Client,
+        project: &str,
+        package: &str,
+        history_retrieval: BuildHistoryRetrieval,
+    ) -> Result<BuildMeta> {
         let project_meta =
             retry_request(|| async { client.project(project.to_owned()).meta().await })
                 .await
@@ -53,7 +95,7 @@ impl BuildMeta {
             }
         }
 
-        let mut enabled_repos = Vec::new();
+        let mut enabled_repos = HashMap::new();
 
         for repo_meta in project_meta.repositories {
             for arch in repo_meta.arches {
@@ -65,14 +107,60 @@ impl BuildMeta {
                     continue;
                 }
 
-                enabled_repos.push(RepoArch {
-                    repo: repo_meta.name.clone(),
-                    arch,
-                });
+                let history = match history_retrieval {
+                    BuildHistoryRetrieval::Full => {
+                        retry_request(|| async {
+                            client
+                                .project(project.to_owned())
+                                .package(package.to_owned())
+                                .history(&repo_meta.name, &arch)
+                                .instrument(
+                                    info_span!("get:history", repo = %repo_meta.name, %arch),
+                                )
+                                .await
+                        })
+                        .await?
+                    }
+                    BuildHistoryRetrieval::None => obs::BuildHistory { entries: vec![] },
+                };
+
+                enabled_repos.insert(
+                    RepoArch {
+                        repo: repo_meta.name.clone(),
+                        arch,
+                    },
+                    history,
+                );
             }
         }
 
         Ok(BuildMeta { enabled_repos })
+    }
+
+    #[instrument]
+    pub fn get_commit_build_info(
+        &self,
+        srcmd5: &str,
+    ) -> Result<HashMap<RepoArch, CommitBuildInfo>> {
+        let mut repos = HashMap::new();
+
+        for (repo, history) in &self.enabled_repos {
+            let prev_bcnt_for_commit = history
+                .entries
+                .iter()
+                .filter(|e| e.srcmd5 == srcmd5)
+                .last()
+                .map(|e| e.bcnt.clone());
+
+            repos.insert(
+                repo.clone(),
+                CommitBuildInfo {
+                    prev_bcnt_for_commit,
+                },
+            );
+        }
+
+        Ok(repos)
     }
 }
 
@@ -86,7 +174,25 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_build_meta() {
+    async fn test_build_meta_repos() {
+        let rev_1 = "1";
+        let srcmd5_1 = random_md5();
+        let bcnt_1 = 2;
+
+        let rev_2 = "2";
+        let srcmd5_2 = random_md5();
+        let bcnt_2 = 5;
+
+        let repo_arch_1 = RepoArch {
+            repo: TEST_REPO.to_owned(),
+            arch: TEST_ARCH_1.to_owned(),
+        };
+
+        let repo_arch_2 = RepoArch {
+            repo: TEST_REPO.to_owned(),
+            arch: TEST_ARCH_2.to_owned(),
+        };
+
         let mock = create_default_mock().await;
         mock.add_project(TEST_PROJECT.to_owned());
         mock.add_new_package(
@@ -108,16 +214,75 @@ mod tests {
             MockRepositoryCode::Finished,
         );
 
+        mock.add_build_history(
+            TEST_PROJECT,
+            TEST_REPO,
+            TEST_ARCH_1,
+            TEST_PACKAGE_1.to_owned(),
+            MockBuildHistoryEntry {
+                rev: rev_1.to_owned(),
+                srcmd5: srcmd5_1.clone(),
+                bcnt: bcnt_1,
+                ..Default::default()
+            },
+        );
+
+        mock.add_build_history(
+            TEST_PROJECT,
+            TEST_REPO,
+            TEST_ARCH_2,
+            TEST_PACKAGE_1.to_owned(),
+            MockBuildHistoryEntry {
+                rev: rev_2.to_owned(),
+                srcmd5: srcmd5_2.clone(),
+                bcnt: bcnt_2,
+                ..Default::default()
+            },
+        );
+
         let client = create_default_client(&mock);
 
-        let mut meta = assert_ok!(BuildMeta::get(&client, TEST_PROJECT, TEST_PACKAGE_1).await);
+        let meta = assert_ok!(
+            BuildMeta::get(
+                &client,
+                TEST_PROJECT,
+                TEST_PACKAGE_1,
+                BuildHistoryRetrieval::Full
+            )
+            .await
+        );
         assert_eq!(meta.enabled_repos.len(), 2);
-        meta.enabled_repos.sort_by(|a, b| a.arch.cmp(&b.arch));
+        assert!(meta.enabled_repos.contains_key(&repo_arch_1));
+        assert!(meta.enabled_repos.contains_key(&repo_arch_2));
 
-        assert_eq!(meta.enabled_repos[0].repo, TEST_REPO);
-        assert_eq!(meta.enabled_repos[0].arch, TEST_ARCH_1);
-        assert_eq!(meta.enabled_repos[1].repo, TEST_REPO);
-        assert_eq!(meta.enabled_repos[1].arch, TEST_ARCH_2);
+        let build_info = assert_ok!(meta.get_commit_build_info(&srcmd5_1));
+
+        let arch_1 = assert_some!(build_info.get(&repo_arch_1));
+        assert_some_eq!(arch_1.prev_bcnt_for_commit.as_deref(), &bcnt_1.to_string());
+
+        let arch_2 = assert_some!(build_info.get(&repo_arch_2));
+        assert_none!(arch_2.prev_bcnt_for_commit.as_deref());
+
+        let meta = assert_ok!(
+            BuildMeta::get(
+                &client,
+                TEST_PROJECT,
+                TEST_PACKAGE_1,
+                BuildHistoryRetrieval::None
+            )
+            .await
+        );
+        assert_eq!(meta.enabled_repos.len(), 2);
+        assert!(meta.enabled_repos.contains_key(&repo_arch_1));
+
+        let build_info = assert_ok!(meta.get_commit_build_info(&srcmd5_1));
+
+        let arch_1 = assert_some!(build_info.get(&repo_arch_1));
+        assert_none!(arch_1.prev_bcnt_for_commit.as_deref());
+        let arch_2 = assert_some!(build_info.get(&repo_arch_2));
+        assert_none!(arch_2.prev_bcnt_for_commit.as_deref());
+
+        assert!(meta.enabled_repos.contains_key(&repo_arch_2));
 
         mock.set_package_metadata(
             TEST_PROJECT,
@@ -131,10 +296,34 @@ mod tests {
             },
         );
 
-        let meta = assert_ok!(BuildMeta::get(&client, TEST_PROJECT, TEST_PACKAGE_1).await);
+        mock.add_build_history(
+            TEST_PROJECT,
+            TEST_REPO,
+            TEST_ARCH_1,
+            TEST_PACKAGE_1.to_owned(),
+            MockBuildHistoryEntry {
+                rev: rev_1.to_owned(),
+                srcmd5: srcmd5_1.clone(),
+                bcnt: bcnt_2,
+                ..Default::default()
+            },
+        );
+
+        let meta = assert_ok!(
+            BuildMeta::get(
+                &client,
+                TEST_PROJECT,
+                TEST_PACKAGE_1,
+                BuildHistoryRetrieval::Full
+            )
+            .await
+        );
         assert_eq!(meta.enabled_repos.len(), 1);
-        assert_eq!(meta.enabled_repos[0].repo, TEST_REPO);
-        assert_eq!(meta.enabled_repos[0].arch, TEST_ARCH_2);
+
+        let build_info = assert_ok!(meta.get_commit_build_info(&srcmd5_2));
+
+        let arch_1 = assert_some!(build_info.get(&repo_arch_2));
+        assert_some_eq!(arch_1.prev_bcnt_for_commit.as_deref(), &bcnt_2.to_string());
 
         mock.set_package_metadata(
             TEST_PROJECT,
@@ -148,10 +337,34 @@ mod tests {
             },
         );
 
-        let meta = assert_ok!(BuildMeta::get(&client, TEST_PROJECT, TEST_PACKAGE_1).await);
+        mock.add_build_history(
+            TEST_PROJECT,
+            TEST_REPO,
+            TEST_ARCH_2,
+            TEST_PACKAGE_1.to_owned(),
+            MockBuildHistoryEntry {
+                rev: rev_1.to_owned(),
+                srcmd5: srcmd5_1.clone(),
+                bcnt: bcnt_1,
+                ..Default::default()
+            },
+        );
+
+        let meta = assert_ok!(
+            BuildMeta::get(
+                &client,
+                TEST_PROJECT,
+                TEST_PACKAGE_1,
+                BuildHistoryRetrieval::Full
+            )
+            .await
+        );
         assert_eq!(meta.enabled_repos.len(), 1);
-        assert_eq!(meta.enabled_repos[0].repo, TEST_REPO);
-        assert_eq!(meta.enabled_repos[0].arch, TEST_ARCH_2);
+
+        let build_info = assert_ok!(meta.get_commit_build_info(&srcmd5_1));
+
+        let arch_2 = assert_some!(build_info.get(&repo_arch_2));
+        assert_some_eq!(arch_2.prev_bcnt_for_commit.as_deref(), &bcnt_1.to_string());
 
         mock.set_package_metadata(
             TEST_PROJECT,
@@ -165,7 +378,15 @@ mod tests {
             },
         );
 
-        let meta = assert_ok!(BuildMeta::get(&client, TEST_PROJECT, TEST_PACKAGE_1).await);
+        let meta = assert_ok!(
+            BuildMeta::get(
+                &client,
+                TEST_PROJECT,
+                TEST_PACKAGE_1,
+                BuildHistoryRetrieval::Full
+            )
+            .await
+        );
         assert_eq!(meta.enabled_repos.len(), 0);
     }
 }

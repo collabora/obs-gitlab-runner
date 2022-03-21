@@ -26,9 +26,9 @@ use tracing::{debug, error, instrument};
 use crate::{
     artifacts::{save_to_tempfile, ArtifactDirectory},
     binaries::download_binaries,
-    build_meta::{BuildMeta, RepoArch},
+    build_meta::{BuildHistoryRetrieval, BuildMeta, CommitBuildInfo, RepoArch},
     cleanup::cleanup_branch,
-    monitor::{ObsMonitor, PackageCompletion, PackageMonitoringOptions},
+    monitor::{MonitoredPackage, ObsMonitor, PackageCompletion, PackageMonitoringOptions},
     pipeline::{generate_monitor_pipeline, GeneratePipelineOptions},
     retry::retry_request,
     upload::ObsUploader,
@@ -73,8 +73,11 @@ struct MonitorAction {
     project: String,
     package: String,
     rev: String,
+    srcmd5: String,
     repository: String,
     arch: String,
+    #[clap(long)]
+    prev_bcnt_for_commit: Option<String>,
     #[clap(long, default_value_t = DEFAULT_BUILD_RESULTS_DIR.into())]
     build_results_dir: Utf8PathBuf,
     #[clap(long, default_value_t = DEFAULT_BUILD_LOG.into())]
@@ -124,15 +127,16 @@ struct ObsBuildInfo {
     project: String,
     package: String,
     rev: Option<String>,
+    srcmd5: Option<String>,
     is_branched: bool,
-    enabled_repos: Vec<RepoArch>,
+    enabled_repos: HashMap<RepoArch, CommitBuildInfo>,
 }
 
 impl ObsBuildInfo {
     #[instrument]
     fn save(&self) -> Result<File> {
         let mut file = tempfile::tempfile().wrap_err("Failed to create build info file")?;
-        serde_json::to_writer(&mut file, self).wrap_err("Failed to write build info file")?;
+        serde_yaml::to_writer(&mut file, self).wrap_err("Failed to write build info file")?;
         Ok(file)
     }
 }
@@ -244,15 +248,15 @@ impl ObsJobHandler {
         )
         .await?;
 
-        let result = uploader.upload_package().await;
-
         let build_info = ObsBuildInfo {
             project: uploader.project().to_owned(),
             package: uploader.package().to_owned(),
             rev: None,
+            srcmd5: None,
             is_branched,
-            enabled_repos: vec![],
+            enabled_repos: HashMap::new(),
         };
+        debug!("Saving initial build info: {:?}", build_info);
 
         let build_info_2 = build_info.clone();
         let build_info_file = tokio::task::spawn_blocking(move || build_info_2.save()).await??;
@@ -262,9 +266,31 @@ impl ObsJobHandler {
             AsyncFile::from_std(build_info_file),
         );
 
-        let result = result?;
-        let build_meta =
-            BuildMeta::get(&self.client, &build_info.project, &build_info.package).await?;
+        let initial_build_meta = BuildMeta::get_if_package_exists(
+            &self.client,
+            &build_info.project,
+            &build_info.package,
+            BuildHistoryRetrieval::Full,
+        )
+        .await?;
+
+        let result = uploader.upload_package(self).await?;
+
+        // If we couldn't get the metadata before because the package didn't
+        // exist yet, get it now but without history, so we leave the previous bcnt empty (if there
+        // was no previous package, there were no previous builds).
+        let build_meta = if let Some(build_meta) = initial_build_meta {
+            build_meta
+        } else {
+            BuildMeta::get(
+                &self.client,
+                &build_info.project,
+                &build_info.package,
+                BuildHistoryRetrieval::None,
+            )
+            .await?
+        };
+        let enabled_repos = build_meta.get_commit_build_info(&result.build_srcmd5)?;
 
         if result.unchanged {
             outputln!("Package unchanged at revision {}.", result.rev);
@@ -286,9 +312,12 @@ impl ObsJobHandler {
 
         let build_info = ObsBuildInfo {
             rev: Some(result.rev),
-            enabled_repos: build_meta.enabled_repos,
+            srcmd5: Some(result.build_srcmd5),
+            enabled_repos,
             ..build_info
         };
+        debug!("Saving complete build info: {:?}", build_info);
+
         let build_info_file = tokio::task::spawn_blocking(move || build_info.save()).await??;
         self.artifacts
             .insert(args.build_info_out, AsyncFile::from_std(build_info_file));
@@ -299,7 +328,7 @@ impl ObsJobHandler {
     #[instrument(skip(self))]
     async fn run_generate_monitor(&mut self, args: GenerateMonitorAction) -> Result<()> {
         let build_info_data = self.get_data(&args.build_info).await?;
-        let build_info: ObsBuildInfo = serde_json::from_slice(&build_info_data[..])
+        let build_info: ObsBuildInfo = serde_yaml::from_slice(&build_info_data[..])
             .wrap_err("Failed to parse provided build info file")?;
 
         let file = generate_monitor_pipeline(
@@ -308,6 +337,9 @@ impl ObsJobHandler {
             &build_info
                 .rev
                 .ok_or_else(|| eyre!("Build revision was not set"))?,
+            &build_info
+                .srcmd5
+                .ok_or_else(|| eyre!("Build srcmd5 was not set"))?,
             &build_info.enabled_repos,
             GeneratePipelineOptions {
                 build_results_dir: args.build_results_dir.to_string(),
@@ -328,13 +360,16 @@ impl ObsJobHandler {
     async fn run_monitor(&mut self, args: MonitorAction) -> Result<()> {
         let monitor = ObsMonitor::new(
             self.client.clone(),
-            args.project.clone(),
-            args.package.clone(),
-            args.repository.clone(),
-            args.arch.clone(),
-            args.rev,
-        )
-        .await?;
+            MonitoredPackage {
+                project: args.project.clone(),
+                package: args.package.clone(),
+                repository: args.repository.clone(),
+                arch: args.arch.clone(),
+                rev: args.rev.clone(),
+                srcmd5: args.srcmd5.clone(),
+                prev_bcnt_for_commit: args.prev_bcnt_for_commit,
+            },
+        );
 
         let completion = monitor
             .monitor_package(self.options.monitor.clone())
@@ -429,7 +464,7 @@ impl ObsJobHandler {
             self.get_data(&args.build_info).await?
         };
 
-        let build_info: ObsBuildInfo = serde_json::from_slice(&build_info_data[..])
+        let build_info: ObsBuildInfo = serde_yaml::from_slice(&build_info_data[..])
             .wrap_err("Failed to parse provided build info file")?;
 
         if build_info.is_branched {
@@ -616,6 +651,8 @@ mod tests {
 
     const JOB_TIMEOUT: u64 = 3600;
     const TEST_LOG_TAIL: u64 = 50;
+
+    const OLD_STATUS_SLEEP_DURATION: Duration = Duration::from_millis(100);
 
     static COLOR_EYRE_INSTALL: Once = Once::new();
 
@@ -814,6 +851,7 @@ mod tests {
                     monitor: PackageMonitoringOptions {
                         sleep_on_building: Duration::ZERO,
                         sleep_on_dirty: Duration::ZERO,
+                        sleep_on_old_status: OLD_STATUS_SLEEP_DURATION,
                     },
                 },
             ))
@@ -862,6 +900,23 @@ mod tests {
             MockRepositoryCode::Finished,
         );
 
+        if test == UploadTest::Rebuild {
+            // We also test excluded repos on rebuilds; this test makes it
+            // easier, because it's not testing creating a new package, so we
+            // can create it ourselves first with the desired metadata.
+            context.obs_mock.add_new_package(
+                TEST_PROJECT,
+                TEST_PACKAGE_1.to_owned(),
+                MockPackageOptions {
+                    disabled: vec![MockPackageDisabledBuild {
+                        repository: None,
+                        arch: Some(TEST_ARCH_2.to_owned()),
+                    }],
+                    ..Default::default()
+                },
+            );
+        }
+
         let artifacts = put_artifacts(
             context,
             [
@@ -899,7 +954,7 @@ mod tests {
 
         let results = get_job_artifacts(&upload);
         let build_info: ObsBuildInfo =
-            serde_json::from_slice(&results.get(DEFAULT_BUILD_INFO).unwrap()).unwrap();
+            serde_yaml::from_slice(&results.get(DEFAULT_BUILD_INFO).unwrap()).unwrap();
 
         assert_eq!(build_info.project, uploaded_project);
         assert_eq!(build_info.package, TEST_PACKAGE_1);
@@ -926,16 +981,24 @@ mod tests {
                 TEST_ARCH_1.to_owned(),
                 MockRepositoryCode::Building,
             );
-            // Also test disabling repos, since we now have an existing package
+            // Also test disabling bcnts, since we now have an existing package
             // to modify the metadata of.
-            context.obs_mock.set_package_metadata(
+            let dir = assert_ok!(
+                context
+                    .obs_client
+                    .project(TEST_PROJECT.to_owned())
+                    .package(TEST_PACKAGE_1.to_owned())
+                    .list(None)
+                    .await
+            );
+            context.obs_mock.add_build_history(
                 TEST_PROJECT,
-                TEST_PACKAGE_1,
-                MockPackageOptions {
-                    disabled: vec![MockPackageDisabledBuild {
-                        repository: None,
-                        arch: Some(TEST_ARCH_2.to_owned()),
-                    }],
+                TEST_REPO,
+                TEST_ARCH_1,
+                TEST_PACKAGE_1.to_owned(),
+                MockBuildHistoryEntry {
+                    rev: dir.rev.unwrap(),
+                    srcmd5: dir.srcmd5,
                     ..Default::default()
                 },
             );
@@ -975,6 +1038,9 @@ mod tests {
             run_obs_handler(context).await;
             assert_eq!(MockJobState::Success, upload.state());
 
+            let job_log = String::from_utf8_lossy(&upload.log()).into_owned();
+            assert!(job_log.contains("unchanged"));
+
             let status = assert_ok!(
                 context
                     .obs_client
@@ -1007,28 +1073,46 @@ mod tests {
                     .await
             );
             assert_eq!(status.code, obs::PackageCode::Broken);
+
+            let job_log = String::from_utf8_lossy(&upload.log()).into_owned();
+            assert!(job_log.contains("unchanged"));
         }
 
         let results = get_job_artifacts(&upload);
-        let mut build_info: ObsBuildInfo =
-            serde_json::from_slice(&results.get(DEFAULT_BUILD_INFO).unwrap()).unwrap();
+        let build_info: ObsBuildInfo =
+            serde_yaml::from_slice(&results.get(DEFAULT_BUILD_INFO).unwrap()).unwrap();
 
         assert_eq!(build_info.project, uploaded_project);
         assert_eq!(build_info.package, TEST_PACKAGE_1);
         assert_some!(build_info.rev.as_deref());
         assert_eq!(build_info.is_branched, test == UploadTest::Branch);
-        build_info.enabled_repos.sort_by(|a, b| a.arch.cmp(&b.arch));
 
         assert_eq!(
             build_info.enabled_repos.len(),
             if test == UploadTest::Rebuild { 1 } else { 2 }
         );
-        assert_eq!(build_info.enabled_repos[0].repo, TEST_REPO);
-        assert_eq!(build_info.enabled_repos[0].arch, TEST_ARCH_1);
 
-        if test != UploadTest::Rebuild {
-            assert_eq!(build_info.enabled_repos[1].repo, TEST_REPO);
-            assert_eq!(build_info.enabled_repos[1].arch, TEST_ARCH_2);
+        let arch_1 = build_info
+            .enabled_repos
+            .get(&RepoArch {
+                repo: TEST_REPO.to_owned(),
+                arch: TEST_ARCH_1.to_owned(),
+            })
+            .unwrap();
+
+        if test == UploadTest::Rebuild {
+            assert_some!(arch_1.prev_bcnt_for_commit.as_deref());
+        } else {
+            assert_none!(arch_1.prev_bcnt_for_commit.as_deref());
+
+            let arch_2 = build_info
+                .enabled_repos
+                .get(&RepoArch {
+                    repo: TEST_REPO.to_owned(),
+                    arch: TEST_ARCH_2.to_owned(),
+                })
+                .unwrap();
+            assert_none!(arch_2.prev_bcnt_for_commit.as_deref());
         }
 
         let mut dir = assert_ok!(
@@ -1130,7 +1214,7 @@ mod tests {
 
         assert_eq!(pipeline_map.len(), build_info.enabled_repos.len());
 
-        for repo in &build_info.enabled_repos {
+        for (repo, info) in &build_info.enabled_repos {
             // Sanity check this, even though test_upload should have already
             // checked it.
             assert_eq!(repo.repo, TEST_REPO);
@@ -1224,6 +1308,25 @@ mod tests {
                 },
             );
 
+            if info.prev_bcnt_for_commit.is_some() {
+                // Update the bcnt in the background, otherwise the monitor will
+                // hang forever waiting.
+                let mock = context.obs_mock.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(OLD_STATUS_SLEEP_DURATION * 2).await;
+                    mock.add_build_history(
+                        TEST_PROJECT,
+                        TEST_REPO,
+                        TEST_ARCH_1,
+                        TEST_PACKAGE_1.to_owned(),
+                        MockBuildHistoryEntry {
+                            bcnt: 999,
+                            ..Default::default()
+                        },
+                    );
+                });
+            }
+
             run_obs_handler(context).await;
             assert_eq!(
                 monitor.state(),
@@ -1235,11 +1338,15 @@ mod tests {
             );
 
             let job_log = String::from_utf8_lossy(&monitor.log()).into_owned();
+
             assert_eq!(
                 job_log.contains("unavailable"),
                 log_test == MonitorLogTest::Unavailable
             );
-
+            assert_eq!(
+                job_log.contains("Old build status"),
+                info.prev_bcnt_for_commit.is_some()
+            );
             assert_eq!(
                 job_log.contains(&log_contents),
                 !success && log_test == MonitorLogTest::Short

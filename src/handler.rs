@@ -667,7 +667,10 @@ mod tests {
 
     #[fixture]
     async fn test_context() -> (TestContext, GitlabLayer) {
-        COLOR_EYRE_INSTALL.call_once(|| color_eyre::install().unwrap());
+        COLOR_EYRE_INSTALL.call_once(|| {
+            eprintln!("TRY INSTALL!");
+            color_eyre::install().unwrap()
+        });
 
         let runner_dir = tempfile::tempdir().unwrap();
         let gitlab_mock = GitlabRunnerMock::start().await;

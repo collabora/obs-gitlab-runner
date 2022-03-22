@@ -74,19 +74,23 @@ struct GenerateMonitorAction {
 
 #[derive(Parser, Debug)]
 struct MonitorAction {
+    #[clap(long)]
     project: String,
+    #[clap(long)]
     package: String,
+    #[clap(long)]
     rev: String,
+    #[clap(long)]
     srcmd5: String,
+    #[clap(long)]
     repository: String,
+    #[clap(long)]
     arch: String,
-    #[clap(long, default_value_t = DEFAULT_ARTIFACT_EXPIRATION.to_owned())]
-    artifact_expiration: String,
     #[clap(long)]
     prev_bcnt_for_commit: Option<String>,
-    #[clap(long, default_value_t = DEFAULT_BUILD_RESULTS_DIR.into())]
+    #[clap(long)]
     build_results_dir: Utf8PathBuf,
-    #[clap(long, default_value_t = DEFAULT_BUILD_LOG.into())]
+    #[clap(long)]
     build_log_out: String,
 }
 

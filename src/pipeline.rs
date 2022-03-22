@@ -42,17 +42,6 @@ pub fn generate_monitor_pipeline(
     enabled_repos: &HashMap<RepoArch, CommitBuildInfo>,
     options: GeneratePipelineOptions,
 ) -> Result<File> {
-    const PROJECT_VAR: &str = "_OBS_RUNNER_PROJECT";
-    const PACKAGE_VAR: &str = "_OBS_RUNNER_PACKAGE";
-    const REV_VAR: &str = "_OBS_RUNNER_REV";
-    const SRCMD5_VAR: &str = "_OBS_RUNNER_SRCMD5";
-    const REPO_VAR: &str = "_OBS_RUNNER_REPO";
-    const ARCH_VAR: &str = "_OBS_RUNNER_ARCH";
-    const BCNT_VAR: &str = "_OBS_RUNNER_BCNT";
-
-    const BUILD_RESULTS_DIR: &str = "_OBS_BUILD_RESULTS_DIR";
-    const BUILD_LOG_OUT: &str = "_OBS_BUILD_LOG_OUT";
-
     let mixin: serde_yaml::Mapping = options
         .mixin
         .as_deref()
@@ -63,37 +52,28 @@ pub fn generate_monitor_pipeline(
 
     let mut jobs = HashMap::new();
     for (RepoArch { repo, arch }, info) in enabled_repos {
-        let mut variables: HashMap<_, _> = [
-            (PROJECT_VAR.to_owned(), project.to_owned()),
-            (PACKAGE_VAR.to_owned(), package.to_owned()),
-            (REV_VAR.to_owned(), rev.to_owned()),
-            (SRCMD5_VAR.to_owned(), srcmd5.to_owned()),
-            (REPO_VAR.to_owned(), repo.clone()),
-            (ARCH_VAR.to_owned(), arch.clone()),
-            (
-                BUILD_RESULTS_DIR.to_owned(),
-                options.build_results_dir.clone(),
-            ),
-            (BUILD_LOG_OUT.to_owned(), options.build_log_out.clone()),
-        ]
-        .into();
+        let mut command = vec!["monitor".to_owned()];
+        let mut variables = HashMap::new();
 
-        let mut command = format!(
-            "monitor ${} ${} ${} ${} ${} ${} \
---build-results-dir ${} --build-log-out ${}",
-            PROJECT_VAR,
-            PACKAGE_VAR,
-            REV_VAR,
-            SRCMD5_VAR,
-            REPO_VAR,
-            ARCH_VAR,
-            BUILD_RESULTS_DIR,
-            BUILD_LOG_OUT
-        );
+        let mut args = vec![
+            ("project", project),
+            ("package", package),
+            ("rev", rev),
+            ("srcmd5", srcmd5),
+            ("repository", &repo),
+            ("arch", &arch),
+            ("build-results-dir", &options.build_results_dir),
+            ("build-log-out", &options.build_log_out),
+        ];
 
         if let Some(bcnt) = &info.prev_bcnt_for_commit {
-            variables.insert(BCNT_VAR.to_owned(), bcnt.clone());
-            command += &format!(" --prev-bcnt-for-commit ${}", BCNT_VAR);
+            args.push(("prev-bcnt-for-commit", bcnt.as_str()));
+        }
+
+        for (arg, value) in args {
+            let var = format!("_OBS_{}", arg.replace("-", "_").to_uppercase());
+            command.extend_from_slice(&[format!("--{}", arg), format!("${}", var)]);
+            variables.insert(var, value.to_owned());
         }
 
         jobs.insert(
@@ -101,7 +81,7 @@ pub fn generate_monitor_pipeline(
             JobSpec {
                 tags: options.tags.clone(),
                 variables,
-                script: vec![command],
+                script: vec![command.join(" ")],
                 artifacts: ArtifactsSpec {
                     paths: vec![
                         options.build_results_dir.clone(),

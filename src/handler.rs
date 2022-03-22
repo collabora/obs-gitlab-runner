@@ -355,8 +355,7 @@ impl ObsJobHandler {
                 prefix: args.job_prefix,
                 mixin: args.mixin,
             },
-        )
-        .await?;
+        )?;
         self.artifacts
             .insert(args.pipeline_out.clone(), AsyncFile::from_std(file));
 

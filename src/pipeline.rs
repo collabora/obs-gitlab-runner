@@ -24,7 +24,7 @@ struct JobSpec {
 }
 
 #[instrument]
-pub async fn generate_monitor_pipeline(
+pub fn generate_monitor_pipeline(
     project: &str,
     package: &str,
     rev: &str,

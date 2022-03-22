@@ -6,7 +6,7 @@ use tracing::info;
 use crate::retry::retry_request;
 
 #[tracing::instrument(skip(client))]
-pub async fn cleanup_branch(
+pub async fn prune_branch(
     client: &obs::Client,
     project: &str,
     package: &str,
@@ -25,13 +25,13 @@ pub async fn cleanup_branch(
     .wrap_err("Failed to list package")?;
     ensure!(
         !dir.linkinfo.is_empty(),
-        "Rejecting attempt to clean up a non-branched package"
+        "Rejecting attempt to prune a non-branched package"
     );
 
     if let Some(expected_rev) = expected_rev {
         if dir.rev.as_deref() != Some(expected_rev) {
             info!(
-                "Latest revision is {}, skipping cleanup",
+                "Latest revision is {}, skipping prune",
                 dir.rev.as_deref().unwrap_or("[unknown]")
             );
             return Ok(());
@@ -79,7 +79,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_cleanup() {
+    async fn test_prune() {
         let test_rev = "1";
 
         let mock = create_default_mock().await;
@@ -126,18 +126,17 @@ mod tests {
             .project(TEST_PROJECT.to_owned())
             .package(TEST_PACKAGE_2.to_owned());
 
-        let err = assert_err!(
-            cleanup_branch(&client, TEST_PROJECT, TEST_PACKAGE_1, Some(test_rev)).await
-        );
+        let err =
+            assert_err!(prune_branch(&client, TEST_PROJECT, TEST_PACKAGE_1, Some(test_rev)).await);
         assert!(err.to_string().contains("Rejecting"));
         assert_ok!(package_1.list(None).await);
 
         assert_ok!(package_2.list(None).await);
-        assert_ok!(cleanup_branch(&client, TEST_PROJECT, TEST_PACKAGE_2, Some("1000")).await);
+        assert_ok!(prune_branch(&client, TEST_PROJECT, TEST_PACKAGE_2, Some("1000")).await);
         assert_ok!(package_2.list(None).await);
 
         assert_ok!(package_2.list(None).await);
-        assert_ok!(cleanup_branch(&client, TEST_PROJECT, TEST_PACKAGE_2, Some(test_rev)).await);
+        assert_ok!(prune_branch(&client, TEST_PROJECT, TEST_PACKAGE_2, Some(test_rev)).await);
         let err = assert_err!(package_2.list(None).await);
         assert_matches!(err, obs::Error::ApiError(obs::ApiError { code, .. })
             if code == "unknown_package");
@@ -151,7 +150,7 @@ mod tests {
             MockBranchOptions::default(),
         );
         assert_ok!(package_2.list(None).await);
-        assert_ok!(cleanup_branch(&client, TEST_PROJECT, TEST_PACKAGE_2, None).await);
+        assert_ok!(prune_branch(&client, TEST_PROJECT, TEST_PACKAGE_2, None).await);
         let err = assert_err!(package_2.list(None).await);
         assert_matches!(err, obs::Error::ApiError(obs::ApiError { code, .. })
             if code == "unknown_package");
@@ -168,7 +167,7 @@ mod tests {
 
         assert_ok!(project.meta().await);
         assert_ok!(package_2.list(None).await);
-        assert_ok!(cleanup_branch(&client, TEST_PROJECT, TEST_PACKAGE_2, Some(test_rev)).await);
+        assert_ok!(prune_branch(&client, TEST_PROJECT, TEST_PACKAGE_2, Some(test_rev)).await);
         let err = assert_err!(package_2.list(None).await);
         assert_matches!(err, obs::Error::ApiError(obs::ApiError { code, .. })
             if code == "unknown_project");

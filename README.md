@@ -85,7 +85,7 @@ within, will be removed.
 Metadata information on the uploaded revision, such as the revision number,
 project name, and package name, will be saved into the file specified by
 `--build-info-out` (default is `build-info.yml`). This file is **required** by
-the `generate-monitor` and `cleanup` steps. Do note that, if `--branch-to` is
+the `generate-monitor` and `prune` steps. Do note that, if `--branch-to` is
 given, the file will be written *immediately* after the branch takes place (i.e.
 before the upload); that way, if the upload fails, the branched project can still
 be cleaned up.
@@ -95,7 +95,7 @@ be cleaned up.
 Before starting an upload,
 [branch](https://openbuildservice.org/help/manuals/obs-user-guide/art.obs.bg.html#sec.obsbg.uc.branchprj)
 the package to a new project, named with the value passed to the argument. Any
-uploads will now go to the branched project, and `generate-monitor` / `cleanup`
+uploads will now go to the branched project, and `generate-monitor` / `prune`
 will both used the branched project / package. This is particularly useful to run
 testing builds on MRs; you can create an OBS branch named after the MR's Git
 branch, and then builds can take place there without interfering with your main
@@ -216,16 +216,16 @@ into.
 
 Changes the filename each monitoring job will save the build log into.
 
-#### `cleanup`
+#### `prune`
 
 ```bash
-cleanup
+prune
   [--build-info BUILD_INFO_FILE=build-info.yml]
   [--ignore-missing-build-info]
   [--only-if-job-unsuccessful]
 ```
 
-If a branch occurred, cleans up the branched package and, if now empty, project,
+If a branch occurred, deletes the branched package and, if now empty, project,
 using the information from the build info file. (If no branching occurred, this
 does nothing.)
 
@@ -239,15 +239,15 @@ to specify the same filename.
 ##### `--ignore-missing-build-info`
 
 Don't return an error if the build info file is missing; instead, do nothing.
-This is primarily useful if `cleanup` is used inside of `after_script`, as it's
+This is primarily useful if `prune` is used inside of `after_script`, as it's
 possible for the command generating the build info to fail before the build info
 is written.
 
 ##### `--only-if-job-unsuccessful`
 
-Only run cleanup if a previous command in the same job failed. This is primarily
-useful if `cleanup` is used inside of `after_script`, to only remove the branched
-project/package if e.g. the upload failed.
+Only run the prune if a previous command in the same job failed. This is
+primarily useful if `prune` is used inside of `after_script`, to only remove the
+branched project/package if e.g. the upload failed.
 
 ## Deployment
 

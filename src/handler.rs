@@ -27,9 +27,9 @@ use crate::{
     artifacts::{save_to_tempfile, ArtifactDirectory},
     binaries::download_binaries,
     build_meta::{BuildHistoryRetrieval, BuildMeta, CommitBuildInfo, RepoArch},
-    cleanup::cleanup_branch,
     monitor::{MonitoredPackage, ObsMonitor, PackageCompletion, PackageMonitoringOptions},
     pipeline::{generate_monitor_pipeline, GeneratePipelineOptions},
+    prune::prune_branch,
     retry::retry_request,
     upload::ObsDscUploader,
 };
@@ -91,7 +91,7 @@ struct MonitorAction {
 }
 
 #[derive(Parser, Debug)]
-struct CleanupAction {
+struct PruneAction {
     #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned())]
     build_info: String,
     #[clap(long)]
@@ -115,7 +115,7 @@ enum Action {
     Dput(DputAction),
     GenerateMonitor(GenerateMonitorAction),
     Monitor(MonitorAction),
-    Cleanup(CleanupAction),
+    Prune(PruneAction),
     #[cfg(test)]
     Echo(EchoAction),
 }
@@ -243,7 +243,7 @@ impl ObsJobHandler {
 
         // The upload prep and actual upload are split in two so that we can
         // already tell what the project & package name are, so build-info.yaml
-        // can be written and cleanup can take place regardless of the actual
+        // can be written and pruning can take place regardless of the actual
         // *upload* success.
         let uploader = ObsDscUploader::prepare(
             self.client.clone(),
@@ -459,9 +459,9 @@ impl ObsJobHandler {
     }
 
     #[instrument(skip(self))]
-    async fn run_cleanup(&mut self, args: CleanupAction) -> Result<()> {
+    async fn run_prune(&mut self, args: PruneAction) -> Result<()> {
         if args.only_if_job_unsuccessful && !self.script_failed {
-            outputln!("Skipping cleanup: main script was successful.");
+            outputln!("Skipping prune: main script was successful.");
             return Ok(());
         }
 
@@ -470,7 +470,7 @@ impl ObsJobHandler {
                 build_info_data
             } else {
                 outputln!(
-                    "Skipping cleanup: build info file '{}' not found.",
+                    "Skipping prune: build info file '{}' not found.",
                     args.build_info
                 );
                 return Ok(());
@@ -484,11 +484,11 @@ impl ObsJobHandler {
 
         if build_info.is_branched {
             outputln!(
-                "Cleaning up branched package {}/{}...",
+                "Pruning branched package {}/{}...",
                 build_info.project,
                 build_info.package
             );
-            cleanup_branch(
+            prune_branch(
                 &self.client,
                 &build_info.project,
                 &build_info.package,
@@ -496,7 +496,7 @@ impl ObsJobHandler {
             )
             .await?;
         } else {
-            outputln!("Skipping cleanup: package was not branched.");
+            outputln!("Skipping prune: package was not branched.");
         }
 
         Ok(())
@@ -516,7 +516,7 @@ impl ObsJobHandler {
             Action::Dput(args) => self.run_dput(args).await?,
             Action::GenerateMonitor(args) => self.run_generate_monitor(args).await?,
             Action::Monitor(args) => self.run_monitor(args).await?,
-            Action::Cleanup(args) => self.run_cleanup(args).await?,
+            Action::Prune(args) => self.run_prune(args).await?,
             #[cfg(test)]
             Action::Echo(args) => {
                 use color_eyre::eyre::ensure;
@@ -1435,54 +1435,54 @@ mod tests {
         }
     }
 
-    async fn test_cleanup(
+    async fn test_prune(
         context: &mut TestContext,
         dput: MockJob,
         build_info: &ObsBuildInfo,
         only_if_job_unsuccessful: bool,
     ) {
-        let cleanup = enqueue_job(
+        let prune = enqueue_job(
             context,
             JobSpec {
-                name: "cleanup".to_owned(),
-                script: vec!["cleanup".to_owned()],
+                name: "prune".to_owned(),
+                script: vec!["prune".to_owned()],
                 ..Default::default()
             },
         );
 
         run_obs_handler(context).await;
-        assert_eq!(MockJobState::Failed, cleanup.state());
+        assert_eq!(MockJobState::Failed, prune.state());
 
-        let cleanup = enqueue_job(
+        let prune = enqueue_job(
             context,
             JobSpec {
-                name: "cleanup".to_owned(),
-                script: vec!["cleanup --ignore-missing-build-info".to_owned()],
+                name: "prune".to_owned(),
+                script: vec!["prune --ignore-missing-build-info".to_owned()],
                 ..Default::default()
             },
         );
 
         run_obs_handler(context).await;
-        assert_eq!(MockJobState::Success, cleanup.state());
+        assert_eq!(MockJobState::Success, prune.state());
 
-        assert!(String::from_utf8_lossy(&cleanup.log()).contains("Skipping cleanup"));
+        assert!(String::from_utf8_lossy(&prune.log()).contains("Skipping prune"));
 
-        let cleanup = if only_if_job_unsuccessful {
-            let cleanup = enqueue_job(
+        let prune = if only_if_job_unsuccessful {
+            let prune = enqueue_job(
                 context,
                 JobSpec {
-                    name: "cleanup".to_owned(),
+                    name: "prune".to_owned(),
                     dependencies: vec![dput.clone()],
                     script: vec!["echo".to_owned()],
-                    after_script: vec!["cleanup --only-if-job-unsuccessful".to_owned()],
+                    after_script: vec!["prune --only-if-job-unsuccessful".to_owned()],
                     ..Default::default()
                 },
             );
 
             run_obs_handler(context).await;
-            assert_eq!(MockJobState::Success, cleanup.state());
+            assert_eq!(MockJobState::Success, prune.state());
 
-            assert!(String::from_utf8_lossy(&cleanup.log()).contains("Skipping cleanup"));
+            assert!(String::from_utf8_lossy(&prune.log()).contains("Skipping prune"));
 
             assert_ok!(
                 context
@@ -1496,11 +1496,11 @@ mod tests {
             enqueue_job(
                 context,
                 JobSpec {
-                    name: "cleanup".to_owned(),
+                    name: "prune".to_owned(),
 
                     dependencies: vec![dput.clone()],
                     script: vec!["echo --fail".to_owned()],
-                    after_script: vec!["cleanup --only-if-job-unsuccessful".to_owned()],
+                    after_script: vec!["prune --only-if-job-unsuccessful".to_owned()],
                     ..Default::default()
                 },
             )
@@ -1508,10 +1508,10 @@ mod tests {
             enqueue_job(
                 context,
                 JobSpec {
-                    name: "cleanup".to_owned(),
+                    name: "prune".to_owned(),
 
                     dependencies: vec![dput.clone()],
-                    script: vec!["cleanup".to_owned()],
+                    script: vec!["prune".to_owned()],
                     ..Default::default()
                 },
             )
@@ -1519,7 +1519,7 @@ mod tests {
 
         run_obs_handler(context).await;
         assert_eq!(
-            cleanup.state(),
+            prune.state(),
             if only_if_job_unsuccessful {
                 MockJobState::Failed
             } else {
@@ -1537,7 +1537,7 @@ mod tests {
                     .await
             );
         } else {
-            assert!(String::from_utf8_lossy(&cleanup.log()).contains("package was not branched"));
+            assert!(String::from_utf8_lossy(&prune.log()).contains("package was not branched"));
 
             assert_ok!(
                 context
@@ -1568,7 +1568,7 @@ mod tests {
             MonitorLogTest::Unavailable
         )]
         log_test: MonitorLogTest,
-        #[values(true, false)] cleanup_only_if_job_unsuccessful: bool,
+        #[values(true, false)] prune_only_if_job_unsuccessful: bool,
     ) {
         let (mut context, layer) = test_context.await;
         with_tracing(layer, async {
@@ -1583,11 +1583,11 @@ mod tests {
             )
             .await;
 
-            test_cleanup(
+            test_prune(
                 &mut context,
                 dput,
                 &build_info,
-                cleanup_only_if_job_unsuccessful,
+                prune_only_if_job_unsuccessful,
             )
             .await;
         })

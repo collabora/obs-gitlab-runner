@@ -20,11 +20,11 @@ use crate::handler::{HandlerOptions, ObsJobHandler};
 mod artifacts;
 mod binaries;
 mod build_meta;
-mod cleanup;
 mod dsc;
 mod handler;
 mod monitor;
 mod pipeline;
+mod prune;
 mod retry;
 mod upload;
 

@@ -119,16 +119,21 @@ impl ObsMonitor {
             return Ok(PackageBuildState::Dirty);
         }
 
-        let status = result
-            .get_status(&self.package.package)
-            .ok_or_else(|| eyre!("Package {} missing", self.package.package))?;
+        let status = match result.get_status(&self.package.package) {
+            Some(status) => status,
+            // There is a small gap after a commit for a new package where its
+            // status isn't available yet.
+            None => return Ok(PackageBuildState::PendingStatusPosted),
+        };
+
         if status.dirty {
             Ok(PackageBuildState::Dirty)
         } else if status.code.is_final() {
-            // There is a small gap after a commit where the previous build
-            // status is still posted. To ensure the build that's now final is
-            // actually our own, check the build history to make sure there is
-            // a build *newer* that the last bcnt we have recorded.
+            // Similarly to above, there is a small gap after a commit where the
+            // previous build status is still posted. To ensure the build that's
+            // now final is actually our own, check the build history to make
+            // sure there is a build *newer* that the last bcnt we have
+            // recorded.
 
             if let Some(prev_bcnt_for_commit) = &self.package.prev_bcnt_for_commit {
                 let history = retry_request(|| async {
@@ -564,7 +569,69 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ignores_status_for_prev_bcnt() {
+    async fn test_handles_missing_status() {
+        let srcmd5 = random_md5();
+
+        let mock = create_default_mock().await;
+
+        mock.add_project(TEST_PROJECT.to_owned());
+        mock.add_new_package(
+            TEST_PROJECT,
+            TEST_PACKAGE_1.to_owned(),
+            MockPackageOptions::default(),
+        );
+
+        mock.add_package_revision(
+            TEST_PROJECT,
+            TEST_PACKAGE_1,
+            MockRevisionOptions {
+                srcmd5: srcmd5.clone(),
+                ..Default::default()
+            },
+            HashMap::new(),
+        );
+
+        mock.add_or_update_repository(
+            TEST_PROJECT,
+            TEST_REPO.to_owned(),
+            TEST_ARCH_1.to_owned(),
+            MockRepositoryCode::Building,
+        );
+
+        let client = create_default_client(&mock);
+        let monitor = ObsMonitor::new(
+            client,
+            MonitoredPackage {
+                project: TEST_PROJECT.to_owned(),
+                package: TEST_PACKAGE_1.to_owned(),
+                repository: TEST_REPO.to_owned(),
+                arch: TEST_ARCH_1.to_owned(),
+                rev: "1".to_owned(),
+                srcmd5: srcmd5.clone(),
+                prev_bcnt_for_commit: None,
+            },
+        );
+
+        let state = assert_ok!(monitor.get_latest_state().await);
+        assert_matches!(state, PackageBuildState::PendingStatusPosted);
+
+        mock.set_package_build_status(
+            TEST_PROJECT,
+            TEST_REPO,
+            TEST_ARCH_1,
+            TEST_PACKAGE_1.to_owned(),
+            MockBuildStatus::new(MockPackageCode::Succeeded),
+        );
+
+        let state = assert_ok!(monitor.get_latest_state().await);
+        assert_matches!(
+            state,
+            PackageBuildState::Completed(PackageCompletion::Succeeded)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handles_old_bcnt_status() {
         let srcmd5 = random_md5();
         let bcnt_1 = 1;
         let bcnt_2 = 2;

@@ -352,6 +352,7 @@ impl ObsJobHandler {
             GeneratePipelineOptions {
                 tags: vec![args.tag],
                 build_results_dir: args.build_results_dir.to_string(),
+                build_log_out: args.build_log_out.to_string(),
                 prefix: args.job_prefix,
                 mixin: args.mixin,
             },

@@ -54,6 +54,7 @@ struct UploadAction {
 
 #[derive(Parser, Debug)]
 struct GenerateMonitorAction {
+    tag: String,
     #[clap(long)]
     mixin: Option<String>,
     #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned())]
@@ -349,6 +350,7 @@ impl ObsJobHandler {
                 .ok_or_else(|| eyre!("Build srcmd5 was not set"))?,
             &build_info.enabled_repos,
             GeneratePipelineOptions {
+                tags: vec![args.tag],
                 build_results_dir: args.build_results_dir.to_string(),
                 prefix: args.job_prefix,
                 mixin: args.mixin,
@@ -1164,6 +1166,7 @@ mod tests {
         success: bool,
         log_test: MonitorLogTest,
     ) {
+        const TEST_JOB_RUNNER_TAG: &str = "test-tag";
         const TEST_BUILD_RESULT: &str = "test-build-result";
         const TEST_BUILD_RESULT_CONTENTS: &[u8] = b"abcdef";
 
@@ -1208,7 +1211,10 @@ mod tests {
             JobSpec {
                 name: "generate".to_owned(),
                 dependencies: vec![upload.clone()],
-                script: vec!["generate-monitor --mixin 'a: 1'".to_owned()],
+                script: vec![format!(
+                    "generate-monitor {} --mixin 'a: 1'",
+                    TEST_JOB_RUNNER_TAG
+                )],
                 ..Default::default()
             },
         );
@@ -1283,6 +1289,14 @@ mod tests {
 
             let a = assert_some!(monitor_map.get(&"a".into()));
             assert_eq!(a, 1);
+
+            let tags = monitor_map
+                .get(&"tags".into())
+                .unwrap()
+                .as_sequence()
+                .unwrap();
+            assert_eq!(tags.len(), 1);
+            assert_eq!(tags[0].as_str().unwrap(), TEST_JOB_RUNNER_TAG);
 
             let variables = monitor_map
                 .get(&"variables".into())

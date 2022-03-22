@@ -8,6 +8,7 @@ use crate::build_meta::{CommitBuildInfo, RepoArch};
 
 #[derive(Clone, Debug)]
 pub struct GeneratePipelineOptions {
+    pub tags: Vec<String>,
     pub build_results_dir: String,
     pub mixin: Option<String>,
     pub prefix: String,
@@ -15,6 +16,7 @@ pub struct GeneratePipelineOptions {
 
 #[derive(Serialize)]
 struct JobSpec {
+    tags: Vec<String>,
     variables: HashMap<String, String>,
     script: Vec<String>,
     #[serde(flatten)]
@@ -71,6 +73,7 @@ pub async fn generate_monitor_pipeline(
         jobs.insert(
             format!("{}-{}-{}", options.prefix, repo, arch),
             JobSpec {
+                tags: options.tags.clone(),
                 variables,
                 script: vec![command],
                 mixin: mixin.clone(),

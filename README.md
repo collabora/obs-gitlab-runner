@@ -119,7 +119,7 @@ operation, there will *always* be a change to upload.
 #### `generate-monitor`
 
 ```bash
-generate-monitor
+generate-monitor RUNNER_TAG
   [--mixin MONITOR_JOB_MIXIN='']
   [--build-info BUILD_INFO_FILE=build-info.yml]
   [--pipeline-out PIPELINE_FILE=obs.yml]
@@ -150,30 +150,15 @@ obs:
         job: job-that-generated-the-pipeline-file
 ```
 
-The generated jobs will run commands that need to be run by the OBS runner, but
-the runner cannot actually determine what [tags](#sending-jobs) should be used.
-Therefore, you will generally have to use [`--mixin`](#--mixin) to add extra
-YAML that will set the tags, e.g.:
+`RUNNER_TAG` should be the OBS runner's tag; this will be used to run the
+generated monitoring jobs on the correct runner. (Unfortunately, the runner
+cannot see its own tags, so it is unable fill this in by itself.)
 
-```yaml
-upload-and-generate:
-  tags:
-    - my-runner-tag
-  variables:
-    JOB_MIXIN: |
-      tags:
-        - my-runner-tag
-  script:
-    - upload [...]
-    - generate-package --mixin $JOB_MIXIN
-  # [...]
-```
-
-In addition, if the parent job that invokes the nested yaml (the `obs` job in
-the above example) has any rules to [avoid duplicate
+If the parent job that invokes the nested yaml (the `obs` job in the above
+example) has any rules to [avoid duplicate
 pipelines](https://gitlab.com/gitlab-org/gitlab/-/issues/299409), those rules
-should be added to the mixin as well, otherwise you may get errors claiming the
-["downstream pipeline can not be
+should be added to the generated job via [`--mixin`](#--mixin), otherwise you
+may get errors claiming the ["downstream pipeline can not be
 created"](https://gitlab.com/gitlab-org/gitlab/-/issues/276179).
 
 After each monitoring job completes, it will save the build artifacts into the
@@ -183,7 +168,23 @@ After each monitoring job completes, it will save the build artifacts into the
 ##### `--mixin MONITOR_JOB_MIXIN=''`
 
 Takes a string containing some YAML that will be merged into each generated job.
-This will generally be used to set the runner tags of the job
+This can be used to set custom rules or artifact settings, e.g.:
+
+```yaml
+upload-and-generate:
+  variables:
+    JOB_MIXIN: |
+      artifacts:
+        paths:
+          - build.log
+          - results/
+        when: always
+        expire_in: 3 days
+  script:
+    - upload [...]
+    - generate-package my-tag --mixin $JOB_MIXIN
+  # [...]
+```
 
 ##### `--build-info BUILD_INFO_FILE=build-info.yml`
 

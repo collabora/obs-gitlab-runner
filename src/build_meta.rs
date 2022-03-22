@@ -137,11 +137,7 @@ impl BuildMeta {
         Ok(BuildMeta { enabled_repos })
     }
 
-    #[instrument]
-    pub fn get_commit_build_info(
-        &self,
-        srcmd5: &str,
-    ) -> Result<HashMap<RepoArch, CommitBuildInfo>> {
+    pub fn get_commit_build_info(&self, srcmd5: &str) -> HashMap<RepoArch, CommitBuildInfo> {
         let mut repos = HashMap::new();
 
         for (repo, history) in &self.enabled_repos {
@@ -160,7 +156,7 @@ impl BuildMeta {
             );
         }
 
-        Ok(repos)
+        repos
     }
 }
 
@@ -255,7 +251,7 @@ mod tests {
         assert!(meta.enabled_repos.contains_key(&repo_arch_1));
         assert!(meta.enabled_repos.contains_key(&repo_arch_2));
 
-        let build_info = assert_ok!(meta.get_commit_build_info(&srcmd5_1));
+        let build_info = meta.get_commit_build_info(&srcmd5_1);
 
         let arch_1 = assert_some!(build_info.get(&repo_arch_1));
         assert_some_eq!(arch_1.prev_bcnt_for_commit.as_deref(), &bcnt_1.to_string());
@@ -275,7 +271,7 @@ mod tests {
         assert_eq!(meta.enabled_repos.len(), 2);
         assert!(meta.enabled_repos.contains_key(&repo_arch_1));
 
-        let build_info = assert_ok!(meta.get_commit_build_info(&srcmd5_1));
+        let build_info = meta.get_commit_build_info(&srcmd5_1);
 
         let arch_1 = assert_some!(build_info.get(&repo_arch_1));
         assert_none!(arch_1.prev_bcnt_for_commit.as_deref());
@@ -320,7 +316,7 @@ mod tests {
         );
         assert_eq!(meta.enabled_repos.len(), 1);
 
-        let build_info = assert_ok!(meta.get_commit_build_info(&srcmd5_2));
+        let build_info = meta.get_commit_build_info(&srcmd5_2);
 
         let arch_1 = assert_some!(build_info.get(&repo_arch_2));
         assert_some_eq!(arch_1.prev_bcnt_for_commit.as_deref(), &bcnt_2.to_string());
@@ -361,7 +357,7 @@ mod tests {
         );
         assert_eq!(meta.enabled_repos.len(), 1);
 
-        let build_info = assert_ok!(meta.get_commit_build_info(&srcmd5_1));
+        let build_info = meta.get_commit_build_info(&srcmd5_1);
 
         let arch_2 = assert_some!(build_info.get(&repo_arch_2));
         assert_some_eq!(arch_2.prev_bcnt_for_commit.as_deref(), &bcnt_1.to_string());

@@ -290,7 +290,7 @@ impl ObsJobHandler {
             )
             .await?
         };
-        let enabled_repos = build_meta.get_commit_build_info(&result.build_srcmd5)?;
+        let enabled_repos = build_meta.get_commit_build_info(&result.build_srcmd5);
 
         if result.unchanged {
             outputln!("Package unchanged at revision {}.", result.rev);

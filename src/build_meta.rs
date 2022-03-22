@@ -137,6 +137,12 @@ impl BuildMeta {
         Ok(BuildMeta { enabled_repos })
     }
 
+    pub fn clear_stored_history(&mut self) {
+        for history in self.enabled_repos.values_mut() {
+            history.entries.clear();
+        }
+    }
+
     pub fn get_commit_build_info(&self, srcmd5: &str) -> HashMap<RepoArch, CommitBuildInfo> {
         let mut repos = HashMap::new();
 
@@ -346,7 +352,7 @@ mod tests {
             },
         );
 
-        let meta = assert_ok!(
+        let mut meta = assert_ok!(
             BuildMeta::get(
                 &client,
                 TEST_PROJECT,
@@ -361,6 +367,12 @@ mod tests {
 
         let arch_2 = assert_some!(build_info.get(&repo_arch_2));
         assert_some_eq!(arch_2.prev_bcnt_for_commit.as_deref(), &bcnt_1.to_string());
+
+        meta.clear_stored_history();
+
+        let build_info = meta.get_commit_build_info(&srcmd5_1);
+        let arch_2 = assert_some!(build_info.get(&repo_arch_2));
+        assert_none!(arch_2.prev_bcnt_for_commit.as_deref());
 
         mock.set_package_metadata(
             TEST_PROJECT,

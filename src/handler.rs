@@ -279,7 +279,7 @@ impl ObsJobHandler {
         // If we couldn't get the metadata before because the package didn't
         // exist yet, get it now but without history, so we leave the previous bcnt empty (if there
         // was no previous package, there were no previous builds).
-        let build_meta = if let Some(build_meta) = initial_build_meta {
+        let mut build_meta = if let Some(build_meta) = initial_build_meta {
             build_meta
         } else {
             BuildMeta::get(
@@ -290,7 +290,6 @@ impl ObsJobHandler {
             )
             .await?
         };
-        let enabled_repos = build_meta.get_commit_build_info(&result.build_srcmd5);
 
         if result.unchanged {
             outputln!("Package unchanged at revision {}.", result.rev);
@@ -305,11 +304,19 @@ impl ObsJobHandler {
                 })
                 .await
                 .wrap_err("Failed to trigger rebuild")?;
+            } else {
+                // Clear out the history used to track "bcnt" values. This is
+                // normally important to make sure the monitor doesn't
+                // accidentally pick up an old build result...but if we didn't
+                // rebuild anything, picking up the old result is *exactly* the
+                // behavior we want.
+                build_meta.clear_stored_history();
             }
         } else {
             outputln!("Package uploaded with revision {}.", result.rev);
         }
 
+        let enabled_repos = build_meta.get_commit_build_info(&result.build_srcmd5);
         let build_info = ObsBuildInfo {
             rev: Some(result.rev),
             srcmd5: Some(result.build_srcmd5),
@@ -863,6 +870,7 @@ mod tests {
     enum UploadTest {
         Basic,
         Rebuild,
+        ReusePreviousBuild,
         Branch,
     }
 
@@ -974,7 +982,7 @@ mod tests {
         run_obs_handler(context).await;
         assert_eq!(MockJobState::Success, upload.state());
 
-        if test == UploadTest::Rebuild {
+        if test == UploadTest::Rebuild || test == UploadTest::ReusePreviousBuild {
             context.obs_mock.add_or_update_repository(
                 &uploaded_project,
                 TEST_REPO.to_owned(),
@@ -1051,31 +1059,33 @@ mod tests {
             );
             assert_eq!(status.code, obs::PackageCode::Failed);
 
-            upload = enqueue_job(
-                context,
-                JobSpec {
-                    name: "upload".to_owned(),
-                    dependencies: vec![artifacts.clone()],
-                    script: vec![format!("{} --rebuild-if-unchanged", upload_command)],
-                    ..Default::default()
-                },
-            );
+            if test == UploadTest::Rebuild {
+                upload = enqueue_job(
+                    context,
+                    JobSpec {
+                        name: "upload".to_owned(),
+                        dependencies: vec![artifacts.clone()],
+                        script: vec![format!("{} --rebuild-if-unchanged", upload_command)],
+                        ..Default::default()
+                    },
+                );
 
-            run_obs_handler(context).await;
-            assert_eq!(MockJobState::Success, upload.state());
+                run_obs_handler(context).await;
+                assert_eq!(MockJobState::Success, upload.state());
 
-            let status = assert_ok!(
-                context
-                    .obs_client
-                    .project(uploaded_project.clone())
-                    .package(TEST_PACKAGE_1.to_owned())
-                    .status(TEST_REPO, TEST_ARCH_1)
-                    .await
-            );
-            assert_eq!(status.code, obs::PackageCode::Broken);
+                let status = assert_ok!(
+                    context
+                        .obs_client
+                        .project(uploaded_project.clone())
+                        .package(TEST_PACKAGE_1.to_owned())
+                        .status(TEST_REPO, TEST_ARCH_1)
+                        .await
+                );
+                assert_eq!(status.code, obs::PackageCode::Broken);
 
-            let job_log = String::from_utf8_lossy(&upload.log()).into_owned();
-            assert!(job_log.contains("unchanged"));
+                let job_log = String::from_utf8_lossy(&upload.log()).into_owned();
+                assert!(job_log.contains("unchanged"));
+            }
         }
 
         let results = get_job_artifacts(&upload);
@@ -1497,7 +1507,12 @@ mod tests {
     #[tokio::test]
     async fn test_handler_flow(
         #[future] test_context: (TestContext, GitlabLayer),
-        #[values(UploadTest::Basic, UploadTest::Rebuild, UploadTest::Branch)]
+        #[values(
+            UploadTest::Basic,
+            UploadTest::Rebuild,
+            UploadTest::ReusePreviousBuild,
+            UploadTest::Branch
+        )]
         upload_test: UploadTest,
         #[values(true, false)] build_success: bool,
         #[values(

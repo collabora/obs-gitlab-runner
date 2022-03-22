@@ -60,7 +60,7 @@ pub struct UploadResult {
 
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub struct ObsUploader {
+pub struct ObsDscUploader {
     #[derivative(Debug = "ignore")]
     client: obs::Client,
 
@@ -75,14 +75,14 @@ pub struct ObsUploader {
     options: ObsUploaderOptions,
 }
 
-impl ObsUploader {
+impl ObsDscUploader {
     pub async fn prepare<'a>(
         client: obs::Client,
         mut project: String,
         branch_to: Option<String>,
         dsc_path: Utf8PathBuf,
         artifacts: &impl ArtifactDirectory,
-    ) -> Result<ObsUploader> {
+    ) -> Result<ObsDscUploader> {
         let dsc_contents = artifacts
             .get_data(dsc_path.as_str())
             .await
@@ -128,7 +128,7 @@ impl ObsUploader {
             project = branch_to;
         }
 
-        Ok(ObsUploader {
+        Ok(ObsDscUploader {
             client,
             project,
             package,
@@ -445,7 +445,7 @@ mod tests {
 
         add_stub_dsc(&mut artifacts, TEST_PACKAGE_1);
         let uploader = assert_ok!(
-            ObsUploader::prepare(
+            ObsDscUploader::prepare(
                 client.clone(),
                 TEST_PROJECT.to_owned(),
                 None,
@@ -461,7 +461,7 @@ mod tests {
 
         add_stub_dsc(&mut artifacts, TEST_PACKAGE_2);
         let uploader = assert_ok!(
-            ObsUploader::prepare(
+            ObsDscUploader::prepare(
                 client.clone(),
                 TEST_PROJECT.to_owned(),
                 None,
@@ -509,7 +509,7 @@ mod tests {
 
         add_stub_dsc(&mut artifacts, TEST_PACKAGE_1);
         let uploader = assert_ok!(
-            ObsUploader::prepare(
+            ObsDscUploader::prepare(
                 client.clone(),
                 TEST_PROJECT.to_owned(),
                 None,
@@ -687,7 +687,7 @@ mod tests {
         // Start adding a few source files.
 
         let uploader = assert_ok!(
-            ObsUploader::prepare(
+            ObsDscUploader::prepare(
                 client.clone(),
                 TEST_PROJECT.to_owned(),
                 None,
@@ -740,7 +740,7 @@ mod tests {
         );
 
         let uploader = assert_ok!(
-            ObsUploader::prepare(
+            ObsDscUploader::prepare(
                 client.clone(),
                 TEST_PROJECT.to_owned(),
                 None,
@@ -777,7 +777,7 @@ mod tests {
         );
 
         let uploader = assert_ok!(
-            ObsUploader::prepare(
+            ObsDscUploader::prepare(
                 client.clone(),
                 TEST_PROJECT.to_owned(),
                 None,
@@ -809,7 +809,7 @@ mod tests {
         // Remove the second test file.
 
         let uploader = assert_ok!(
-            ObsUploader::prepare(
+            ObsDscUploader::prepare(
                 client.clone(),
                 TEST_PROJECT.to_owned(),
                 None,
@@ -846,7 +846,7 @@ mod tests {
 
         let branched_project = format!("{}:branch", TEST_PROJECT);
         let uploader = assert_ok!(
-            ObsUploader::prepare(
+            ObsDscUploader::prepare(
                 client.clone(),
                 TEST_PROJECT.to_owned(),
                 Some(branched_project.clone()),

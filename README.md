@@ -69,10 +69,10 @@ In order to connect to OBS, three variables must be set (generally within the
 
 ### Commands
 
-#### `upload`
+#### `dput`
 
 ```bash
-upload PROJECT DSC_FILE
+dput PROJECT DSC_FILE
   [--branch-to BRANCHED_PROJECT]
   [--build-info-out BUILD_INFO_FILE=build-info.yml]
   [--rebuild-if-unchanged]
@@ -131,12 +131,12 @@ generate-monitor RUNNER_TAG
 
 Generates a [child
 pipeline](https://docs.gitlab.com/ee/ci/pipelines/parent_child_pipelines.html)
-for the purpose of monitoring builds that were started from an
-[`upload`](#upload) command. An individual monitoring job will be generated for
-each repository / architecture combination in the project, with a name of
+for the purpose of monitoring builds that were started from a [`dput`](#dput)
+command. An individual monitoring job will be generated for each repository /
+architecture combination in the project, with a name of
 `MONITOR_JOB_PREFIX-REPOSITORY-ARCH` (e.g. `obs-default-aarch64`). Because this
 command needs to read the generated build info file, this should generally be in
-the same job as the invocation of [`upload`](#upload). The generated pipeline
+the same job as the invocation of [`dput`](#dput). The generated pipeline
 file can be included in your main pipeline following the standard GitLab
 mechanisms:
 
@@ -172,7 +172,7 @@ Takes a string containing some YAML that will be merged into each generated job.
 This can be used to set custom rules or artifact settings, e.g.:
 
 ```yaml
-upload-and-generate:
+dput-and-generate:
   variables:
     JOB_MIXIN: |
       artifacts:
@@ -182,7 +182,7 @@ upload-and-generate:
         when: always
         expire_in: 3 days
   script:
-    - upload [...]
+    - dput [...]
     - generate-package my-tag --mixin $JOB_MIXIN
   # [...]
 ```
@@ -190,7 +190,7 @@ upload-and-generate:
 ##### `--build-info BUILD_INFO_FILE=build-info.yml`
 
 Specifies the name of the build info file to read. In particular, if a different
-build info filename was used with `upload` via
+build info filename was used with `dput` via
 [`--build-info-out`](#--build-info-out), then `--build-info` should be used here
 to specify the same filename.
 
@@ -205,7 +205,7 @@ Changes the prefix that will be prepended to each generated job
 
 ##### `--artifact-expiration ARTIFACT_EXPIRATION='3 days'`
 
-Changes the expiration of the build results & log.
+Changes the expiration of the build results &.
 
 ##### `--build-results-dir BUILD_RESULTS_DIR=results`
 
@@ -232,7 +232,7 @@ does nothing.)
 ##### `--build-info BUILD_INFO_FILE=build-info.yml`
 
 Specifies the name of the build info file to read. In particular, if a different
-build info filename was used with `upload` via
+build info filename was used with `dput` via
 [`--build-info-out`](#--build-info-out), then `--build-info` should be used here
 to specify the same filename.
 

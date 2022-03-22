@@ -31,7 +31,7 @@ use crate::{
     monitor::{MonitoredPackage, ObsMonitor, PackageCompletion, PackageMonitoringOptions},
     pipeline::{generate_monitor_pipeline, GeneratePipelineOptions},
     retry::retry_request,
-    upload::ObsUploader,
+    upload::ObsDscUploader,
 };
 
 const DEFAULT_BUILD_INFO: &str = "build-info.yml";
@@ -42,7 +42,7 @@ const DEFAULT_BUILD_RESULTS_DIR: &str = "results";
 const DEFAULT_BUILD_LOG: &str = "build.log";
 
 #[derive(Parser, Debug)]
-struct UploadAction {
+struct DputAction {
     project: String,
     dsc: String,
     #[clap(long, default_value = "")]
@@ -112,7 +112,7 @@ struct EchoAction {
 
 #[derive(Subcommand)]
 enum Action {
-    Upload(UploadAction),
+    Dput(DputAction),
     GenerateMonitor(GenerateMonitorAction),
     Monitor(MonitorAction),
     Cleanup(CleanupAction),
@@ -233,7 +233,7 @@ impl ObsJobHandler {
     }
 
     #[instrument(skip(self))]
-    async fn run_upload(&mut self, args: UploadAction) -> Result<()> {
+    async fn run_dput(&mut self, args: DputAction) -> Result<()> {
         let branch_to = if !args.branch_to.is_empty() {
             Some(args.branch_to)
         } else {
@@ -245,7 +245,7 @@ impl ObsJobHandler {
         // already tell what the project & package name are, so build-info.yaml
         // can be written and cleanup can take place regardless of the actual
         // *upload* success.
-        let uploader = ObsUploader::prepare(
+        let uploader = ObsDscUploader::prepare(
             self.client.clone(),
             args.project.clone(),
             branch_to,
@@ -513,7 +513,7 @@ impl ObsJobHandler {
         let command = Command::try_parse_from(args)?;
 
         match command.action {
-            Action::Upload(args) => self.run_upload(args).await?,
+            Action::Dput(args) => self.run_dput(args).await?,
             Action::GenerateMonitor(args) => self.run_generate_monitor(args).await?,
             Action::Monitor(args) => self.run_monitor(args).await?,
             Action::Cleanup(args) => self.run_cleanup(args).await?,
@@ -875,14 +875,14 @@ mod tests {
     }
 
     #[derive(Debug, PartialEq, Eq)]
-    enum UploadTest {
+    enum DputTest {
         Basic,
         Rebuild,
         ReusePreviousBuild,
         Branch,
     }
 
-    async fn test_upload(context: &mut TestContext, test: UploadTest) -> (MockJob, ObsBuildInfo) {
+    async fn test_dput(context: &mut TestContext, test: DputTest) -> (MockJob, ObsBuildInfo) {
         let test1_file = "test1";
         let test1_contents = b"123";
         let test1_md5 = compute_md5(test1_contents);
@@ -916,7 +916,7 @@ mod tests {
             MockRepositoryCode::Finished,
         );
 
-        if test == UploadTest::Rebuild {
+        if test == DputTest::Rebuild {
             // We also test excluded repos on rebuilds; this test makes it
             // easier, because it's not testing creating a new package, so we
             // can create it ourselves first with the desired metadata.
@@ -947,52 +947,52 @@ mod tests {
         )
         .await;
 
-        let mut upload_command = format!("upload {} {}", TEST_PROJECT, dsc1_file);
-        let mut uploaded_project = TEST_PROJECT.to_owned();
+        let mut dput_command = format!("dput {} {}", TEST_PROJECT, dsc1_file);
+        let mut created_project = TEST_PROJECT.to_owned();
 
-        if test == UploadTest::Branch {
-            uploaded_project += ":branched";
-            upload_command += &format!(" --branch-to {}", uploaded_project);
+        if test == DputTest::Branch {
+            created_project += ":branched";
+            dput_command += &format!(" --branch-to {}", created_project);
         }
 
-        let upload = enqueue_job(
+        let dput = enqueue_job(
             context,
             JobSpec {
-                name: "upload".to_owned(),
+                name: "dput".to_owned(),
                 dependencies: vec![artifacts.clone()],
-                script: vec![upload_command.replace(dsc1_file, dsc1_bad_file)],
+                script: vec![dput_command.replace(dsc1_file, dsc1_bad_file)],
                 ..Default::default()
             },
         );
 
         run_obs_handler(context).await;
-        assert_eq!(MockJobState::Failed, upload.state());
+        assert_eq!(MockJobState::Failed, dput.state());
 
-        let results = get_job_artifacts(&upload);
+        let results = get_job_artifacts(&dput);
         let build_info: ObsBuildInfo =
             serde_yaml::from_slice(&results.get(DEFAULT_BUILD_INFO).unwrap()).unwrap();
 
-        assert_eq!(build_info.project, uploaded_project);
+        assert_eq!(build_info.project, created_project);
         assert_eq!(build_info.package, TEST_PACKAGE_1);
         assert_none!(build_info.rev);
-        assert_eq!(build_info.is_branched, test == UploadTest::Branch);
+        assert_eq!(build_info.is_branched, test == DputTest::Branch);
 
-        let mut upload = enqueue_job(
+        let mut dput = enqueue_job(
             context,
             JobSpec {
-                name: "upload".to_owned(),
+                name: "dput".to_owned(),
                 dependencies: vec![artifacts.clone()],
-                script: vec![upload_command.clone()],
+                script: vec![dput_command.clone()],
                 ..Default::default()
             },
         );
 
         run_obs_handler(context).await;
-        assert_eq!(MockJobState::Success, upload.state());
+        assert_eq!(MockJobState::Success, dput.state());
 
-        if test == UploadTest::Rebuild || test == UploadTest::ReusePreviousBuild {
+        if test == DputTest::Rebuild || test == DputTest::ReusePreviousBuild {
             context.obs_mock.add_or_update_repository(
-                &uploaded_project,
+                &created_project,
                 TEST_REPO.to_owned(),
                 TEST_ARCH_1.to_owned(),
                 MockRepositoryCode::Building,
@@ -1020,11 +1020,11 @@ mod tests {
             );
 
             context.obs_mock.set_package_build_status_for_rebuilds(
-                &uploaded_project,
+                &created_project,
                 MockBuildStatus::new(MockPackageCode::Broken),
             );
             context.obs_mock.set_package_build_status(
-                &uploaded_project,
+                &created_project,
                 TEST_REPO,
                 TEST_ARCH_1,
                 TEST_PACKAGE_1.to_owned(),
@@ -1034,80 +1034,80 @@ mod tests {
             let status = assert_ok!(
                 context
                     .obs_client
-                    .project(uploaded_project.clone())
+                    .project(created_project.clone())
                     .package(TEST_PACKAGE_1.to_owned())
                     .status(TEST_REPO, TEST_ARCH_1)
                     .await
             );
             assert_eq!(status.code, obs::PackageCode::Failed);
 
-            upload = enqueue_job(
+            dput = enqueue_job(
                 context,
                 JobSpec {
-                    name: "upload".to_owned(),
+                    name: "dput".to_owned(),
                     dependencies: vec![artifacts.clone()],
-                    script: vec![upload_command.clone()],
+                    script: vec![dput_command.clone()],
                     ..Default::default()
                 },
             );
 
             run_obs_handler(context).await;
-            assert_eq!(MockJobState::Success, upload.state());
+            assert_eq!(MockJobState::Success, dput.state());
 
-            let job_log = String::from_utf8_lossy(&upload.log()).into_owned();
+            let job_log = String::from_utf8_lossy(&dput.log()).into_owned();
             assert!(job_log.contains("unchanged"));
 
             let status = assert_ok!(
                 context
                     .obs_client
-                    .project(uploaded_project.clone())
+                    .project(created_project.clone())
                     .package(TEST_PACKAGE_1.to_owned())
                     .status(TEST_REPO, TEST_ARCH_1)
                     .await
             );
             assert_eq!(status.code, obs::PackageCode::Failed);
 
-            if test == UploadTest::Rebuild {
-                upload = enqueue_job(
+            if test == DputTest::Rebuild {
+                dput = enqueue_job(
                     context,
                     JobSpec {
-                        name: "upload".to_owned(),
+                        name: "dput".to_owned(),
                         dependencies: vec![artifacts.clone()],
-                        script: vec![format!("{} --rebuild-if-unchanged", upload_command)],
+                        script: vec![format!("{} --rebuild-if-unchanged", dput_command)],
                         ..Default::default()
                     },
                 );
 
                 run_obs_handler(context).await;
-                assert_eq!(MockJobState::Success, upload.state());
+                assert_eq!(MockJobState::Success, dput.state());
 
                 let status = assert_ok!(
                     context
                         .obs_client
-                        .project(uploaded_project.clone())
+                        .project(created_project.clone())
                         .package(TEST_PACKAGE_1.to_owned())
                         .status(TEST_REPO, TEST_ARCH_1)
                         .await
                 );
                 assert_eq!(status.code, obs::PackageCode::Broken);
 
-                let job_log = String::from_utf8_lossy(&upload.log()).into_owned();
+                let job_log = String::from_utf8_lossy(&dput.log()).into_owned();
                 assert!(job_log.contains("unchanged"));
             }
         }
 
-        let results = get_job_artifacts(&upload);
+        let results = get_job_artifacts(&dput);
         let build_info: ObsBuildInfo =
             serde_yaml::from_slice(&results.get(DEFAULT_BUILD_INFO).unwrap()).unwrap();
 
-        assert_eq!(build_info.project, uploaded_project);
+        assert_eq!(build_info.project, created_project);
         assert_eq!(build_info.package, TEST_PACKAGE_1);
         assert_some!(build_info.rev.as_deref());
-        assert_eq!(build_info.is_branched, test == UploadTest::Branch);
+        assert_eq!(build_info.is_branched, test == DputTest::Branch);
 
         assert_eq!(
             build_info.enabled_repos.len(),
-            if test == UploadTest::Rebuild { 1 } else { 2 }
+            if test == DputTest::Rebuild { 1 } else { 2 }
         );
 
         let arch_1 = build_info
@@ -1118,7 +1118,7 @@ mod tests {
             })
             .unwrap();
 
-        if test == UploadTest::Rebuild {
+        if test == DputTest::Rebuild {
             assert_some!(arch_1.prev_bcnt_for_commit.as_deref());
         } else {
             assert_none!(arch_1.prev_bcnt_for_commit.as_deref());
@@ -1136,7 +1136,7 @@ mod tests {
         let mut dir = assert_ok!(
             context
                 .obs_client
-                .project(uploaded_project.clone())
+                .project(created_project.clone())
                 .package(TEST_PACKAGE_1.to_owned())
                 .list(None)
                 .await
@@ -1152,7 +1152,7 @@ mod tests {
         assert_eq!(dir.entries[2].size, dsc1_contents.len() as u64);
         assert_eq!(dir.entries[2].md5, dsc1_md5);
 
-        (upload, build_info)
+        (dput, build_info)
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -1167,7 +1167,7 @@ mod tests {
 
     async fn test_monitoring(
         context: &mut TestContext,
-        upload: MockJob,
+        dput: MockJob,
         build_info: &ObsBuildInfo,
         success: bool,
         log_test: MonitorLogTest,
@@ -1216,7 +1216,7 @@ mod tests {
             context,
             JobSpec {
                 name: "generate".to_owned(),
-                dependencies: vec![upload.clone()],
+                dependencies: vec![dput.clone()],
                 script: vec![format!(
                     "generate-monitor {} --mixin 'a: 1'",
                     TEST_JOB_RUNNER_TAG
@@ -1237,7 +1237,7 @@ mod tests {
         assert_eq!(pipeline_map.len(), build_info.enabled_repos.len());
 
         for (repo, info) in &build_info.enabled_repos {
-            // Sanity check this, even though test_upload should have already
+            // Sanity check this, even though test_dput should have already
             // checked it.
             assert_eq!(repo.repo, TEST_REPO);
             assert!(
@@ -1358,7 +1358,7 @@ mod tests {
                 context,
                 JobSpec {
                     name: monitor_job_name.clone(),
-                    dependencies: vec![upload.clone()],
+                    dependencies: vec![dput.clone()],
                     variables: variables.clone(),
                     script: script.clone(),
                     ..Default::default()
@@ -1437,7 +1437,7 @@ mod tests {
 
     async fn test_cleanup(
         context: &mut TestContext,
-        upload: MockJob,
+        dput: MockJob,
         build_info: &ObsBuildInfo,
         only_if_job_unsuccessful: bool,
     ) {
@@ -1472,7 +1472,7 @@ mod tests {
                 context,
                 JobSpec {
                     name: "cleanup".to_owned(),
-                    dependencies: vec![upload.clone()],
+                    dependencies: vec![dput.clone()],
                     script: vec!["echo".to_owned()],
                     after_script: vec!["cleanup --only-if-job-unsuccessful".to_owned()],
                     ..Default::default()
@@ -1498,7 +1498,7 @@ mod tests {
                 JobSpec {
                     name: "cleanup".to_owned(),
 
-                    dependencies: vec![upload.clone()],
+                    dependencies: vec![dput.clone()],
                     script: vec!["echo --fail".to_owned()],
                     after_script: vec!["cleanup --only-if-job-unsuccessful".to_owned()],
                     ..Default::default()
@@ -1510,7 +1510,7 @@ mod tests {
                 JobSpec {
                     name: "cleanup".to_owned(),
 
-                    dependencies: vec![upload.clone()],
+                    dependencies: vec![dput.clone()],
                     script: vec!["cleanup".to_owned()],
                     ..Default::default()
                 },
@@ -1555,12 +1555,12 @@ mod tests {
     async fn test_handler_flow(
         #[future] test_context: (TestContext, GitlabLayer),
         #[values(
-            UploadTest::Basic,
-            UploadTest::Rebuild,
-            UploadTest::ReusePreviousBuild,
-            UploadTest::Branch
+            DputTest::Basic,
+            DputTest::Rebuild,
+            DputTest::ReusePreviousBuild,
+            DputTest::Branch
         )]
-        upload_test: UploadTest,
+        dput_test: DputTest,
         #[values(true, false)] build_success: bool,
         #[values(
             MonitorLogTest::Long,
@@ -1572,11 +1572,11 @@ mod tests {
     ) {
         let (mut context, layer) = test_context.await;
         with_tracing(layer, async {
-            let (upload, build_info) = test_upload(&mut context, upload_test).await;
+            let (dput, build_info) = test_dput(&mut context, dput_test).await;
 
             test_monitoring(
                 &mut context,
-                upload.clone(),
+                dput.clone(),
                 &build_info,
                 build_success,
                 log_test,
@@ -1585,7 +1585,7 @@ mod tests {
 
             test_cleanup(
                 &mut context,
-                upload,
+                dput,
                 &build_info,
                 cleanup_only_if_job_unsuccessful,
             )

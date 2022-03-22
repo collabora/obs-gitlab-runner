@@ -34,7 +34,7 @@ use crate::{
     upload::ObsUploader,
 };
 
-const DEFAULT_BUILD_INFO: &str = "build-info.json";
+const DEFAULT_BUILD_INFO: &str = "build-info.yml";
 const DEFAULT_MONITOR_PIPELINE: &str = "obs.yml";
 const DEFAULT_PIPELINE_JOB_PREFIX: &str = "obs";
 const DEFAULT_BUILD_RESULTS_DIR: &str = "results";
@@ -54,12 +54,12 @@ struct UploadAction {
 
 #[derive(Parser, Debug)]
 struct GenerateMonitorAction {
+    #[clap(long)]
+    mixin: Option<String>,
     #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned())]
     build_info: String,
     #[clap(long, default_value_t = DEFAULT_MONITOR_PIPELINE.to_owned())]
     pipeline_out: String,
-    #[clap(long)]
-    mixin: Option<String>,
     #[clap(long, default_value_t = DEFAULT_PIPELINE_JOB_PREFIX.to_owned())]
     job_prefix: String,
     #[clap(long, default_value_t = DEFAULT_BUILD_RESULTS_DIR.into())]
@@ -236,7 +236,7 @@ impl ObsJobHandler {
         let is_branched = branch_to.is_some();
 
         // The upload prep and actual upload are split in two so that we can
-        // already tell what the project & package name are, so build-info.json
+        // already tell what the project & package name are, so build-info.yaml
         // can be written and cleanup can take place regardless of the actual
         // *upload* success.
         let uploader = ObsUploader::prepare(

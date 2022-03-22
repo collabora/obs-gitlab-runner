@@ -124,6 +124,7 @@ generate-monitor RUNNER_TAG
   [--build-info BUILD_INFO_FILE=build-info.yml]
   [--pipeline-out PIPELINE_FILE=obs.yml]
   [--job-prefix MONITOR_JOB_PREFIX=obs]
+  [--artifact-expiration ARTIFACT_EXPIRATION='3 days']
   [--build-results-dir BUILD_RESULTS_DIR=results]
   [--build-log-out BUILD_LOG_FILE=build.log]
 ```
@@ -163,7 +164,7 @@ created"](https://gitlab.com/gitlab-org/gitlab/-/issues/276179).
 
 After each monitoring job completes, it will save the build artifacts into the
 `BUILD_RESULTS_DIR` directory, and the build log will be saved to
-`BUILD_LOG_FILE`.
+`BUILD_LOG_FILE`. These artifacts will automatically be uploaded to GitLab.
 
 ##### `--mixin MONITOR_JOB_MIXIN=''`
 
@@ -201,6 +202,10 @@ Changes the filename of the child pipeline YAML.
 
 Changes the prefix that will be prepended to each generated job
 (`MONITOR_JOB_PREFIX-REPOSITORY-ARCH`).
+
+##### `--artifact-expiration ARTIFACT_EXPIRATION='3 days'`
+
+Changes the expiration of the build results & log.
 
 ##### `--build-results-dir BUILD_RESULTS_DIR=results`
 

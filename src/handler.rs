@@ -37,6 +37,7 @@ use crate::{
 const DEFAULT_BUILD_INFO: &str = "build-info.yml";
 const DEFAULT_MONITOR_PIPELINE: &str = "obs.yml";
 const DEFAULT_PIPELINE_JOB_PREFIX: &str = "obs";
+const DEFAULT_ARTIFACT_EXPIRATION: &str = "3 days";
 const DEFAULT_BUILD_RESULTS_DIR: &str = "results";
 const DEFAULT_BUILD_LOG: &str = "build.log";
 
@@ -63,6 +64,8 @@ struct GenerateMonitorAction {
     pipeline_out: String,
     #[clap(long, default_value_t = DEFAULT_PIPELINE_JOB_PREFIX.to_owned())]
     job_prefix: String,
+    #[clap(long, default_value_t = DEFAULT_ARTIFACT_EXPIRATION.to_owned())]
+    artifact_expiration: String,
     #[clap(long, default_value_t = DEFAULT_BUILD_RESULTS_DIR.into())]
     build_results_dir: Utf8PathBuf,
     #[clap(long, default_value_t = DEFAULT_BUILD_LOG.into())]
@@ -77,6 +80,8 @@ struct MonitorAction {
     srcmd5: String,
     repository: String,
     arch: String,
+    #[clap(long, default_value_t = DEFAULT_ARTIFACT_EXPIRATION.to_owned())]
+    artifact_expiration: String,
     #[clap(long)]
     prev_bcnt_for_commit: Option<String>,
     #[clap(long, default_value_t = DEFAULT_BUILD_RESULTS_DIR.into())]
@@ -351,6 +356,7 @@ impl ObsJobHandler {
             &build_info.enabled_repos,
             GeneratePipelineOptions {
                 tags: vec![args.tag],
+                artifact_expiration: args.artifact_expiration,
                 build_results_dir: args.build_results_dir.to_string(),
                 build_log_out: args.build_log_out.to_string(),
                 prefix: args.job_prefix,
@@ -1289,6 +1295,33 @@ mod tests {
 
             let a = assert_some!(monitor_map.get(&"a".into()));
             assert_eq!(a, 1);
+
+            let artifacts = monitor_map
+                .get(&"artifacts".into())
+                .unwrap()
+                .as_mapping()
+                .unwrap();
+            assert_eq!(
+                artifacts
+                    .get(&"expire_in".into())
+                    .unwrap()
+                    .as_str()
+                    .unwrap(),
+                DEFAULT_ARTIFACT_EXPIRATION
+            );
+
+            let mut artifact_paths: Vec<_> = artifacts
+                .get(&"paths".into())
+                .unwrap()
+                .as_sequence()
+                .unwrap()
+                .iter()
+                .map(|item| item.as_str().unwrap())
+                .collect();
+            artifact_paths.sort();
+            assert_eq!(artifact_paths.len(), 2);
+            assert_eq!(artifact_paths[0], DEFAULT_BUILD_LOG);
+            assert_eq!(artifact_paths[1], DEFAULT_BUILD_RESULTS_DIR);
 
             let tags = monitor_map
                 .get(&"tags".into())

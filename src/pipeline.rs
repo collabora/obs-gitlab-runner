@@ -27,7 +27,9 @@ struct ArtifactsSpec {
 struct JobSpec {
     tags: Vec<String>,
     variables: HashMap<String, String>,
+    before_script: Vec<String>,
     script: Vec<String>,
+    after_script: Vec<String>,
     artifacts: ArtifactsSpec,
     rules: serde_yaml::Sequence,
 }
@@ -81,6 +83,13 @@ pub fn generate_monitor_pipeline(
                 tags: options.tags.clone(),
                 variables,
                 script: vec![command.join(" ")],
+                // The caller's full pipeline file may have had set some
+                // defaults for 'before_script' and 'after_script'. We
+                // definitely never want those in the generated jobs (they're
+                // likely not even valid commands for this runner anyway), so
+                // ensure that they're set to be empty.
+                before_script: vec![],
+                after_script: vec![],
                 artifacts: ArtifactsSpec {
                     paths: vec![
                         options.build_results_dir.clone(),

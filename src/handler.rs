@@ -1359,6 +1359,15 @@ mod tests {
                 })
                 .collect::<HashMap<_, _>>();
 
+            for script_key in ["before_script", "after_script"] {
+                let script = monitor_map
+                    .get(&script_key.into())
+                    .unwrap()
+                    .as_sequence()
+                    .unwrap();
+                assert_eq!(script.len(), 0);
+            }
+
             let script = monitor_map
                 .get(&"script".into())
                 .unwrap()

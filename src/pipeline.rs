@@ -10,10 +10,10 @@ use crate::build_meta::{CommitBuildInfo, RepoArch};
 pub struct GeneratePipelineOptions {
     pub tags: Vec<String>,
     pub artifact_expiration: String,
+    pub prefix: String,
+    pub rules: Option<String>,
     pub build_results_dir: String,
     pub build_log_out: String,
-    pub mixin: Option<String>,
-    pub prefix: String,
 }
 
 #[derive(Serialize)]
@@ -29,8 +29,7 @@ struct JobSpec {
     variables: HashMap<String, String>,
     script: Vec<String>,
     artifacts: ArtifactsSpec,
-    #[serde(flatten)]
-    mixin: serde_yaml::Mapping,
+    rules: serde_yaml::Sequence,
 }
 
 #[instrument]
@@ -42,8 +41,8 @@ pub fn generate_monitor_pipeline(
     enabled_repos: &HashMap<RepoArch, CommitBuildInfo>,
     options: GeneratePipelineOptions,
 ) -> Result<File> {
-    let mixin: serde_yaml::Mapping = options
-        .mixin
+    let rules: serde_yaml::Sequence = options
+        .rules
         .as_deref()
         .map(serde_yaml::from_str)
         .transpose()
@@ -90,7 +89,7 @@ pub fn generate_monitor_pipeline(
                     when: "always".to_owned(),
                     expire_in: options.artifact_expiration.clone(),
                 },
-                mixin: mixin.clone(),
+                rules: rules.clone(),
             },
         );
     }

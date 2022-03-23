@@ -120,7 +120,7 @@ operation, there will *always* be a change to upload.
 
 ```bash
 generate-monitor RUNNER_TAG
-  [--mixin MONITOR_JOB_MIXIN='']
+  [--rules RULES]
   [--build-info BUILD_INFO_FILE=build-info.yml]
   [--pipeline-out PIPELINE_FILE=obs.yml]
   [--job-prefix MONITOR_JOB_PREFIX=obs]
@@ -158,7 +158,7 @@ cannot see its own tags, so it is unable fill this in by itself.)
 If the parent job that invokes the nested yaml (the `obs` job in the above
 example) has any rules to [avoid duplicate
 pipelines](https://gitlab.com/gitlab-org/gitlab/-/issues/299409), those rules
-should be added to the generated job via [`--mixin`](#--mixin), otherwise you
+should be added to the generated job via [`--rules`](#--rules), otherwise you
 may get errors claiming the ["downstream pipeline can not be
 created"](https://gitlab.com/gitlab-org/gitlab/-/issues/276179).
 
@@ -166,24 +166,21 @@ After each monitoring job completes, it will save the build artifacts into the
 `BUILD_RESULTS_DIR` directory, and the build log will be saved to
 `BUILD_LOG_FILE`. These artifacts will automatically be uploaded to GitLab.
 
-##### `--mixin MONITOR_JOB_MIXIN=''`
+##### `--rules RULES`
 
-Takes a string containing some YAML that will be merged into each generated job.
-This can be used to set custom rules or artifact settings, e.g.:
+Takes a string containing a YAML sequence of mappings to use as
+[rules](https://docs.gitlab.com/ee/ci/yaml/#rules) on the generated jobs.
 
 ```yaml
 dput-and-generate:
   variables:
-    JOB_MIXIN: |
-      artifacts:
-        paths:
-          - build.log
-          - results/
+    RULES: |
+      - if: $$VAR == 1
         when: always
-        expire_in: 3 days
+      - when: never
   script:
     - dput [...]
-    - generate-package my-tag --mixin $JOB_MIXIN
+    - generate-package my-tag --rules $RULES
   # [...]
 ```
 

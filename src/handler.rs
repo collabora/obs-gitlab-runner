@@ -57,7 +57,7 @@ struct DputAction {
 struct GenerateMonitorAction {
     tag: String,
     #[clap(long)]
-    mixin: Option<String>,
+    rules: Option<String>,
     #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned())]
     build_info: String,
     #[clap(long, default_value_t = DEFAULT_MONITOR_PIPELINE.to_owned())]
@@ -361,10 +361,10 @@ impl ObsJobHandler {
             GeneratePipelineOptions {
                 tags: vec![args.tag],
                 artifact_expiration: args.artifact_expiration,
+                prefix: args.job_prefix,
+                rules: args.rules,
                 build_results_dir: args.build_results_dir.to_string(),
                 build_log_out: args.build_log_out.to_string(),
-                prefix: args.job_prefix,
-                mixin: args.mixin,
             },
         )?;
         self.artifacts
@@ -1222,7 +1222,7 @@ mod tests {
                 name: "generate".to_owned(),
                 dependencies: vec![dput.clone()],
                 script: vec![format!(
-                    "generate-monitor {} --mixin 'a: 1'",
+                    "generate-monitor {} --rules '[{{a: 1}}, {{b: 2}}]'",
                     TEST_JOB_RUNNER_TAG
                 )],
                 ..Default::default()
@@ -1297,9 +1297,6 @@ mod tests {
                 .as_mapping()
                 .unwrap();
 
-            let a = assert_some!(monitor_map.get(&"a".into()));
-            assert_eq!(a, 1);
-
             let artifacts = monitor_map
                 .get(&"artifacts".into())
                 .unwrap()
@@ -1334,6 +1331,19 @@ mod tests {
                 .unwrap();
             assert_eq!(tags.len(), 1);
             assert_eq!(tags[0].as_str().unwrap(), TEST_JOB_RUNNER_TAG);
+
+            let rules: Vec<_> = monitor_map
+                .get(&"rules".into())
+                .unwrap()
+                .as_sequence()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_mapping().unwrap())
+                .collect();
+            assert_eq!(rules.len(), 2);
+
+            assert_eq!(rules[0].get(&"a".into()).unwrap().as_i64().unwrap(), 1);
+            assert_eq!(rules[1].get(&"b".into()).unwrap().as_i64().unwrap(), 2);
 
             let variables = monitor_map
                 .get(&"variables".into())

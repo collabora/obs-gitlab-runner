@@ -61,8 +61,8 @@ pub fn generate_monitor_pipeline(
             ("package", package),
             ("rev", rev),
             ("srcmd5", srcmd5),
-            ("repository", &repo),
-            ("arch", &arch),
+            ("repository", repo),
+            ("arch", arch),
             ("build-results-dir", &options.build_results_dir),
             ("build-log-out", &options.build_log_out),
         ];
@@ -72,7 +72,7 @@ pub fn generate_monitor_pipeline(
         }
 
         for (arg, value) in args {
-            let var = format!("_OBS_{}", arg.replace("-", "_").to_uppercase());
+            let var = format!("_OBS_{}", arg.replace('-', "_").to_uppercase());
             command.extend_from_slice(&[format!("--{}", arg), format!("${}", var)]);
             variables.insert(var, value.to_owned());
         }

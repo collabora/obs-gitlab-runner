@@ -34,7 +34,7 @@ url = "2.2"
 
 gitlab-runner = { git = "https://github.com/collabora/gitlab-runner-rs" }
 # gitlab-runner = { path = "../gitlab-runner-rs/gitlab-runner" }
-open-build-service-api = { git = "https://github.com/refi64/open-build-service-rs", branch = "things-4" }
+open-build-service-api = { git = "https://github.com/collabora/open-build-service-rs" }
 # open-build-service-api = { path = "../open-build-service-rs/open-build-service-api" }
 
 [dev-dependencies]
@@ -45,5 +45,5 @@ zip = "0.5"
 
 gitlab-runner-mock = { git = "https://github.com/collabora/gitlab-runner-rs" }
 # gitlab-runner-mock = { path = "../gitlab-runner-rs/gitlab-runner-mock" }
-open-build-service-mock = { git = "https://github.com/refi64/open-build-service-rs", branch = "things-4" }
+open-build-service-mock = { git = "https://github.com/collabora/open-build-service-rs" }
 # open-build-service-mock = { path = "../open-build-service-rs/open-build-service-mock" }

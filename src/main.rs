@@ -49,7 +49,7 @@ impl FromStr for TargetsArg {
 
 impl Default for TargetsArg {
     fn default() -> Self {
-        "obs_gitlab_runner=info".parse().unwrap()
+        "info".parse().unwrap()
     }
 }
 

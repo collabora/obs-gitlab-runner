@@ -28,7 +28,7 @@ use crate::{
     binaries::download_binaries,
     build_meta::{BuildHistoryRetrieval, BuildMeta, CommitBuildInfo, RepoArch},
     monitor::{MonitoredPackage, ObsMonitor, PackageCompletion, PackageMonitoringOptions},
-    pipeline::{generate_monitor_pipeline, GeneratePipelineOptions},
+    pipeline::{generate_monitor_pipeline, GeneratePipelineOptions, PipelineDownloadBinaries},
     prune::prune_branch,
     retry::retry_request,
     upload::ObsDscUploader,
@@ -38,7 +38,6 @@ const DEFAULT_BUILD_INFO: &str = "build-info.yml";
 const DEFAULT_MONITOR_PIPELINE: &str = "obs.yml";
 const DEFAULT_PIPELINE_JOB_PREFIX: &str = "obs";
 const DEFAULT_ARTIFACT_EXPIRATION: &str = "3 days";
-const DEFAULT_BUILD_RESULTS_DIR: &str = "results";
 const DEFAULT_BUILD_LOG: &str = "build.log";
 
 #[derive(Parser, Debug)]
@@ -58,6 +57,8 @@ struct GenerateMonitorAction {
     tag: String,
     #[clap(long)]
     rules: Option<String>,
+    #[clap(long = "download-build-results-to")]
+    build_results_dir: Option<Utf8PathBuf>,
     #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned())]
     build_info: String,
     #[clap(long, default_value_t = DEFAULT_MONITOR_PIPELINE.to_owned())]
@@ -66,8 +67,6 @@ struct GenerateMonitorAction {
     job_prefix: String,
     #[clap(long, default_value_t = DEFAULT_ARTIFACT_EXPIRATION.to_owned())]
     artifact_expiration: String,
-    #[clap(long, default_value_t = DEFAULT_BUILD_RESULTS_DIR.into())]
-    build_results_dir: Utf8PathBuf,
     #[clap(long, default_value_t = DEFAULT_BUILD_LOG.into())]
     build_log_out: String,
 }
@@ -89,9 +88,21 @@ struct MonitorAction {
     #[clap(long)]
     prev_bcnt_for_commit: Option<String>,
     #[clap(long)]
-    build_results_dir: Utf8PathBuf,
-    #[clap(long)]
     build_log_out: String,
+}
+
+#[derive(Parser, Debug)]
+struct DownloadBinariesAction {
+    #[clap(long)]
+    project: String,
+    #[clap(long)]
+    package: String,
+    #[clap(long)]
+    repository: String,
+    #[clap(long)]
+    arch: String,
+    #[clap(long)]
+    build_results_dir: Utf8PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -119,6 +130,7 @@ enum Action {
     Dput(DputAction),
     GenerateMonitor(GenerateMonitorAction),
     Monitor(MonitorAction),
+    DownloadBinaries(DownloadBinariesAction),
     Prune(PruneAction),
     #[cfg(test)]
     Echo(EchoAction),
@@ -363,7 +375,13 @@ impl ObsJobHandler {
                 artifact_expiration: args.artifact_expiration,
                 prefix: args.job_prefix,
                 rules: args.rules,
-                build_results_dir: args.build_results_dir.to_string(),
+                download_binaries: if let Some(build_results_dir) = args.build_results_dir {
+                    PipelineDownloadBinaries::OnSuccess {
+                        build_results_dir: build_results_dir.into_string(),
+                    }
+                } else {
+                    PipelineDownloadBinaries::Never
+                },
                 build_log_out: args.build_log_out.to_string(),
             },
         )?;
@@ -408,24 +426,6 @@ impl ObsJobHandler {
         match completion {
             PackageCompletion::Succeeded => {
                 outputln!("Build succeeded!");
-
-                let binaries = download_binaries(
-                    self.client.clone(),
-                    &args.project,
-                    &args.package,
-                    &args.repository,
-                    &args.arch,
-                )
-                .await?;
-                let binary_count = binaries.len();
-
-                self.artifacts.extend(
-                    binaries
-                        .into_iter()
-                        .map(|(path, file)| (args.build_results_dir.join(path).to_string(), file)),
-                );
-
-                outputln!("Downloaded {} artifact(s).", binary_count);
             }
             PackageCompletion::Superceded => {
                 outputln!("Build was superceded by a newer revision.");
@@ -459,6 +459,28 @@ impl ObsJobHandler {
             }
         }
 
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn run_download_binaries(&mut self, args: DownloadBinariesAction) -> Result<()> {
+        let binaries = download_binaries(
+            self.client.clone(),
+            &args.project,
+            &args.package,
+            &args.repository,
+            &args.arch,
+        )
+        .await?;
+        let binary_count = binaries.len();
+
+        self.artifacts.extend(
+            binaries
+                .into_iter()
+                .map(|(path, file)| (args.build_results_dir.join(path).to_string(), file)),
+        );
+
+        outputln!("Downloaded {} artifact(s).", binary_count);
         Ok(())
     }
 
@@ -520,6 +542,7 @@ impl ObsJobHandler {
             Action::Dput(args) => self.run_dput(args).await?,
             Action::GenerateMonitor(args) => self.run_generate_monitor(args).await?,
             Action::Monitor(args) => self.run_monitor(args).await?,
+            Action::DownloadBinaries(args) => self.run_download_binaries(args).await?,
             Action::Prune(args) => self.run_prune(args).await?,
             #[cfg(test)]
             Action::Echo(args) => {
@@ -844,7 +867,9 @@ mod tests {
 
     fn get_job_artifacts(job: &MockJob) -> HashMap<String, Vec<u8>> {
         let data = (*job.artifact()).clone();
-        assert!(!data.is_empty(), "No artifacts present");
+        if data.is_empty() {
+            return HashMap::new();
+        }
 
         let cursor = Cursor::new(data);
         let mut zip = ZipArchive::new(cursor).unwrap();
@@ -1175,8 +1200,10 @@ mod tests {
         build_info: &ObsBuildInfo,
         success: bool,
         log_test: MonitorLogTest,
+        download_binaries: bool,
     ) {
         const TEST_JOB_RUNNER_TAG: &str = "test-tag";
+        const TEST_BUILD_RESULTS_DIR: &str = "results";
         const TEST_BUILD_RESULT: &str = "test-build-result";
         const TEST_BUILD_RESULT_CONTENTS: &[u8] = b"abcdef";
 
@@ -1216,15 +1243,19 @@ mod tests {
             log_vs_limit
         );
 
+        let mut generate_command = format!(
+            "generate-monitor {} --rules '[{{a: 1}}, {{b: 2}}]'",
+            TEST_JOB_RUNNER_TAG
+        );
+        if download_binaries {
+            generate_command += &format!(" --download-build-results-to {}", TEST_BUILD_RESULTS_DIR);
+        }
         let generate = enqueue_job(
             context,
             JobSpec {
                 name: "generate".to_owned(),
                 dependencies: vec![dput.clone()],
-                script: vec![format!(
-                    "generate-monitor {} --rules '[{{a: 1}}, {{b: 2}}]'",
-                    TEST_JOB_RUNNER_TAG
-                )],
+                script: vec![generate_command],
                 ..Default::default()
             },
         );
@@ -1320,9 +1351,15 @@ mod tests {
                 .map(|item| item.as_str().unwrap())
                 .collect();
             artifact_paths.sort();
-            assert_eq!(artifact_paths.len(), 2);
-            assert_eq!(artifact_paths[0], DEFAULT_BUILD_LOG);
-            assert_eq!(artifact_paths[1], DEFAULT_BUILD_RESULTS_DIR);
+
+            if download_binaries {
+                assert_eq!(
+                    &artifact_paths,
+                    &[DEFAULT_BUILD_LOG, TEST_BUILD_RESULTS_DIR]
+                );
+            } else {
+                assert_eq!(&artifact_paths, &[DEFAULT_BUILD_LOG]);
+            }
 
             let tags = monitor_map
                 .get(&"tags".into())
@@ -1344,20 +1381,6 @@ mod tests {
 
             assert_eq!(rules[0].get(&"a".into()).unwrap().as_i64().unwrap(), 1);
             assert_eq!(rules[1].get(&"b".into()).unwrap().as_i64().unwrap(), 2);
-
-            let variables = monitor_map
-                .get(&"variables".into())
-                .unwrap()
-                .as_mapping()
-                .unwrap()
-                .iter()
-                .map(|(k, v)| {
-                    (
-                        k.as_str().unwrap().to_owned(),
-                        v.as_str().unwrap().to_owned(),
-                    )
-                })
-                .collect::<HashMap<_, _>>();
 
             for script_key in ["before_script", "after_script"] {
                 let script = monitor_map
@@ -1382,7 +1405,6 @@ mod tests {
                 JobSpec {
                     name: monitor_job_name.clone(),
                     dependencies: vec![dput.clone()],
-                    variables: variables.clone(),
                     script: script.clone(),
                     ..Default::default()
                 },
@@ -1438,22 +1460,26 @@ mod tests {
                 assert!(job_log.contains(String::from_utf8_lossy(truncated_log_bytes).as_ref()));
             }
 
-            if log_test != MonitorLogTest::Unavailable {
-                let results = get_job_artifacts(&monitor);
+            let results = get_job_artifacts(&monitor);
+            let build_result_path = Utf8Path::new(TEST_BUILD_RESULTS_DIR)
+                .join(TEST_BUILD_RESULT)
+                .into_string();
+            let mut has_built_result = false;
 
+            if log_test != MonitorLogTest::Unavailable {
                 let full_log = results.get(DEFAULT_BUILD_LOG).unwrap();
                 assert_eq!(log_contents, String::from_utf8_lossy(full_log));
 
-                if success {
-                    let build_result = results
-                        .get(
-                            Utf8Path::new(DEFAULT_BUILD_RESULTS_DIR)
-                                .join(TEST_BUILD_RESULT)
-                                .as_str(),
-                        )
-                        .unwrap();
+                if success && download_binaries {
+                    let build_result = results.get(&build_result_path).unwrap();
                     assert_eq!(TEST_BUILD_RESULT_CONTENTS, &build_result[..]);
+
+                    has_built_result = true;
                 }
+            }
+
+            if !has_built_result {
+                assert_none!(results.get(&build_result_path));
             }
         }
     }
@@ -1591,6 +1617,7 @@ mod tests {
             MonitorLogTest::Unavailable
         )]
         log_test: MonitorLogTest,
+        #[values(true, false)] download_binaries: bool,
         #[values(true, false)] prune_only_if_job_unsuccessful: bool,
     ) {
         let (mut context, layer) = test_context.await;
@@ -1603,6 +1630,7 @@ mod tests {
                 &build_info,
                 build_success,
                 log_test,
+                download_binaries,
             )
             .await;
 

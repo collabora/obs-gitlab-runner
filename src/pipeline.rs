@@ -6,14 +6,20 @@ use tracing::instrument;
 
 use crate::build_meta::{CommitBuildInfo, RepoArch};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PipelineDownloadBinaries {
+    OnSuccess { build_results_dir: String },
+    Never,
+}
+
 #[derive(Clone, Debug)]
 pub struct GeneratePipelineOptions {
     pub tags: Vec<String>,
     pub artifact_expiration: String,
     pub prefix: String,
     pub rules: Option<String>,
-    pub build_results_dir: String,
     pub build_log_out: String,
+    pub download_binaries: PipelineDownloadBinaries,
 }
 
 #[derive(Serialize)]
@@ -26,12 +32,21 @@ struct ArtifactsSpec {
 #[derive(Serialize)]
 struct JobSpec {
     tags: Vec<String>,
-    variables: HashMap<String, String>,
     before_script: Vec<String>,
     script: Vec<String>,
     after_script: Vec<String>,
     artifacts: ArtifactsSpec,
     rules: serde_yaml::Sequence,
+}
+
+fn generate_command(command_name: String, args: &[(&str, &str)]) -> String {
+    let mut command = vec![command_name];
+
+    for (arg, value) in args {
+        command.extend_from_slice(&[format!("--{}", arg), shell_words::quote(value).into_owned()]);
+    }
+
+    command.join(" ")
 }
 
 #[instrument]
@@ -53,36 +68,46 @@ pub fn generate_monitor_pipeline(
 
     let mut jobs = HashMap::new();
     for (RepoArch { repo, arch }, info) in enabled_repos {
-        let mut command = vec!["monitor".to_owned()];
-        let mut variables = HashMap::new();
+        let mut script = vec![];
+        let mut artifact_paths = vec![];
 
-        let mut args = vec![
+        let common_args = vec![
             ("project", project),
             ("package", package),
-            ("rev", rev),
-            ("srcmd5", srcmd5),
             ("repository", repo),
             ("arch", arch),
-            ("build-results-dir", &options.build_results_dir),
-            ("build-log-out", &options.build_log_out),
         ];
 
+        let mut monitor_args = vec![
+            ("rev", rev),
+            ("srcmd5", srcmd5),
+            ("build-log-out", &options.build_log_out),
+        ];
         if let Some(bcnt) = &info.prev_bcnt_for_commit {
-            args.push(("prev-bcnt-for-commit", bcnt.as_str()));
+            monitor_args.push(("prev-bcnt-for-commit", bcnt.as_str()));
         }
+        monitor_args.extend_from_slice(&common_args);
+        script.push(generate_command("monitor".to_owned(), &monitor_args));
+        artifact_paths.push(options.build_log_out.clone());
 
-        for (arg, value) in args {
-            let var = format!("_OBS_{}", arg.replace('-', "_").to_uppercase());
-            command.extend_from_slice(&[format!("--{}", arg), format!("${}", var)]);
-            variables.insert(var, value.to_owned());
+        if let PipelineDownloadBinaries::OnSuccess { build_results_dir } =
+            &options.download_binaries
+        {
+            let mut download_args: Vec<(_, &str)> =
+                vec![("build-results-dir", build_results_dir.as_str())];
+            download_args.extend_from_slice(&common_args);
+            script.push(generate_command(
+                "download-binaries".to_owned(),
+                &download_args,
+            ));
+            artifact_paths.push(build_results_dir.clone());
         }
 
         jobs.insert(
             format!("{}-{}-{}", options.prefix, repo, arch),
             JobSpec {
                 tags: options.tags.clone(),
-                variables,
-                script: vec![command.join(" ")],
+                script,
                 // The caller's full pipeline file may have had set some
                 // defaults for 'before_script' and 'after_script'. We
                 // definitely never want those in the generated jobs (they're
@@ -91,10 +116,7 @@ pub fn generate_monitor_pipeline(
                 before_script: vec![],
                 after_script: vec![],
                 artifacts: ArtifactsSpec {
-                    paths: vec![
-                        options.build_results_dir.clone(),
-                        options.build_log_out.clone(),
-                    ],
+                    paths: artifact_paths,
                     when: "always".to_owned(),
                     expire_in: options.artifact_expiration.clone(),
                 },

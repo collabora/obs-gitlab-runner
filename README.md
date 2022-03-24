@@ -121,11 +121,11 @@ operation, there will *always* be a change to upload.
 ```bash
 generate-monitor RUNNER_TAG
   [--rules RULES]
+  [--download-build-results-to BUILD_RESULTS_DIR]
   [--build-info BUILD_INFO_FILE=build-info.yml]
   [--pipeline-out PIPELINE_FILE=obs.yml]
   [--job-prefix MONITOR_JOB_PREFIX=obs]
   [--artifact-expiration ARTIFACT_EXPIRATION='3 days']
-  [--build-results-dir BUILD_RESULTS_DIR=results]
   [--build-log-out BUILD_LOG_FILE=build.log]
 ```
 
@@ -162,9 +162,10 @@ should be added to the generated job via [`--rules`](#--rules), otherwise you
 may get errors claiming the ["downstream pipeline can not be
 created"](https://gitlab.com/gitlab-org/gitlab/-/issues/276179).
 
-After each monitoring job completes, it will save the build artifacts into the
-`BUILD_RESULTS_DIR` directory, and the build log will be saved to
-`BUILD_LOG_FILE`. These artifacts will automatically be uploaded to GitLab.
+After each monitoring job completes, it will save the build log to
+`BUILD_LOG_FILE`. In addition, if `--download-build-results-to` is given, the
+build artifacts will be saved to the `BUILD_RESULTS_DIR`. These artifacts will
+all automatically be uploaded to GitLab.
 
 ##### `--rules RULES`
 
@@ -183,6 +184,11 @@ dput-and-generate:
     - generate-package my-tag --rules $RULES
   # [...]
 ```
+
+##### `--download-build-results-to BUILD_RESULTS_DIR`
+
+After a monitoring job completes, download the build results from OBS to the
+given `BUILD_RESULTS_DIR`, and upload it as a GitLab build artifact..
 
 ##### `--build-info BUILD_INFO_FILE=build-info.yml`
 
@@ -203,11 +209,6 @@ Changes the prefix that will be prepended to each generated job
 ##### `--artifact-expiration ARTIFACT_EXPIRATION='3 days'`
 
 Changes the expiration of the build results &.
-
-##### `--build-results-dir BUILD_RESULTS_DIR=results`
-
-Changes the directory each monitoring job will place the build results from OBS
-into.
 
 ##### `--build-log-out BUILD_LOG_FILE=build.log`
 

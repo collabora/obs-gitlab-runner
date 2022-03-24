@@ -208,7 +208,7 @@ Changes the prefix that will be prepended to each generated job
 
 ##### `--artifact-expiration ARTIFACT_EXPIRATION='3 days'`
 
-Changes the expiration of the build results &.
+Changes the expiration of the build results & logs.
 
 ##### `--build-log-out BUILD_LOG_FILE=build.log`
 

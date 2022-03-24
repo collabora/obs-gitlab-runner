@@ -9,7 +9,7 @@ use tokio::{
     fs::File as AsyncFile,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
 };
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 use crate::retry::{retry_large_request, retry_request};
 
@@ -135,17 +135,18 @@ impl ObsMonitor {
             // sure there is a build *newer* that the last bcnt we have
             // recorded.
 
-            if let Some(prev_bcnt_for_commit) = &self.package.prev_bcnt_for_commit {
-                let history = retry_request(|| async {
-                    clinet_package
-                        .history(&self.package.repository, &self.package.arch)
-                        .await
-                })
-                .await
-                .wrap_err("Failed to get history")?;
-                if history.entries.last().map(|e| &e.bcnt) == Some(prev_bcnt_for_commit) {
-                    return Ok(PackageBuildState::PendingStatusPosted);
-                }
+            let history = retry_request(|| async {
+                clinet_package
+                    .history(&self.package.repository, &self.package.arch)
+                    .await
+            })
+            .await
+            .wrap_err("Failed to get history")?;
+            let prev_bcnt_for_commit = history.entries.last().map(|e| e.bcnt.as_str());
+
+            debug!(?prev_bcnt_for_commit);
+            if prev_bcnt_for_commit == self.package.prev_bcnt_for_commit.as_deref() {
+                return Ok(PackageBuildState::PendingStatusPosted);
             }
 
             Ok(PackageBuildState::Completed(match status.code {
@@ -531,6 +532,16 @@ mod tests {
                 ..Default::default()
             },
         );
+        mock.add_build_history(
+            TEST_PROJECT,
+            TEST_REPO,
+            TEST_ARCH_1,
+            TEST_PACKAGE_1.to_owned(),
+            MockBuildHistoryEntry {
+                srcmd5: srcmd5.clone(),
+                ..Default::default()
+            },
+        );
 
         let state = assert_ok!(monitor.get_latest_state().await);
         assert_matches!(
@@ -623,6 +634,16 @@ mod tests {
             TEST_PACKAGE_1.to_owned(),
             MockBuildStatus::new(MockPackageCode::Succeeded),
         );
+        mock.add_build_history(
+            TEST_PROJECT,
+            TEST_REPO,
+            TEST_ARCH_1,
+            TEST_PACKAGE_1.to_owned(),
+            MockBuildHistoryEntry {
+                srcmd5: srcmd5.clone(),
+                ..Default::default()
+            },
+        );
 
         let state = assert_ok!(monitor.get_latest_state().await);
         assert_matches!(
@@ -662,6 +683,24 @@ mod tests {
             TEST_ARCH_1.to_owned(),
             MockRepositoryCode::Building,
         );
+
+        let client = create_default_client(&mock);
+        let monitor = ObsMonitor::new(
+            client.clone(),
+            MonitoredPackage {
+                project: TEST_PROJECT.to_owned(),
+                package: TEST_PACKAGE_1.to_owned(),
+                repository: TEST_REPO.to_owned(),
+                arch: TEST_ARCH_1.to_owned(),
+                rev: "1".to_owned(),
+                srcmd5: srcmd5.clone(),
+                prev_bcnt_for_commit: None,
+            },
+        );
+
+        let state = assert_ok!(monitor.get_latest_state().await);
+        assert_matches!(state, PackageBuildState::PendingStatusPosted);
+
         mock.set_package_build_status(
             TEST_PROJECT,
             TEST_REPO,
@@ -681,7 +720,12 @@ mod tests {
             },
         );
 
-        let client = create_default_client(&mock);
+        let state = assert_ok!(monitor.get_latest_state().await);
+        assert_matches!(
+            state,
+            PackageBuildState::Completed(PackageCompletion::Succeeded)
+        );
+
         let monitor = ObsMonitor::new(
             client,
             MonitoredPackage {

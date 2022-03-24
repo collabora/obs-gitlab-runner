@@ -903,7 +903,7 @@ mod tests {
         .await;
     }
 
-    #[derive(Debug, PartialEq, Eq)]
+    #[derive(Debug, PartialEq, Eq, Clone, Copy)]
     enum DputTest {
         Basic,
         Rebuild,
@@ -1026,8 +1026,8 @@ mod tests {
                 TEST_ARCH_1.to_owned(),
                 MockRepositoryCode::Building,
             );
-            // Also test disabling bcnts, since we now have an existing package
-            // to modify the metadata of.
+            // Also test bcnts, since we now have an existing package to modify
+            // the metadata of.
             let dir = assert_ok!(
                 context
                     .obs_client
@@ -1036,6 +1036,21 @@ mod tests {
                     .list(None)
                     .await
             );
+            // Testing of reused builds never had the second arch disabled, so
+            // also add that build history.
+            if test == DputTest::ReusePreviousBuild {
+                context.obs_mock.add_build_history(
+                    TEST_PROJECT,
+                    TEST_REPO,
+                    TEST_ARCH_2,
+                    TEST_PACKAGE_1.to_owned(),
+                    MockBuildHistoryEntry {
+                        rev: dir.rev.clone().unwrap(),
+                        srcmd5: dir.srcmd5.clone(),
+                        ..Default::default()
+                    },
+                );
+            }
             context.obs_mock.add_build_history(
                 TEST_PROJECT,
                 TEST_REPO,
@@ -1199,6 +1214,7 @@ mod tests {
         dput: MockJob,
         build_info: &ObsBuildInfo,
         success: bool,
+        dput_test: DputTest,
         log_test: MonitorLogTest,
         download_binaries: bool,
     ) {
@@ -1271,7 +1287,7 @@ mod tests {
 
         assert_eq!(pipeline_map.len(), build_info.enabled_repos.len());
 
-        for (repo, info) in &build_info.enabled_repos {
+        for repo in build_info.enabled_repos.keys() {
             // Sanity check this, even though test_dput should have already
             // checked it.
             assert_eq!(repo.repo, TEST_REPO);
@@ -1283,7 +1299,7 @@ mod tests {
 
             context.obs_mock.set_package_build_status(
                 &build_info.project,
-                TEST_REPO,
+                &repo.repo,
                 &repo.arch,
                 TEST_PACKAGE_1.to_owned(),
                 MockBuildStatus::new(if success {
@@ -1410,26 +1426,32 @@ mod tests {
                 },
             );
 
-            if info.prev_bcnt_for_commit.is_some() {
+            if dput_test != DputTest::ReusePreviousBuild {
                 // Update the bcnt in the background, otherwise the monitor will
                 // hang forever waiting.
                 let mock = context.obs_mock.clone();
+                let build_info_2 = build_info.clone();
+                let repo_2 = repo.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(OLD_STATUS_SLEEP_DURATION * 2).await;
                     mock.add_build_history(
-                        TEST_PROJECT,
-                        TEST_REPO,
-                        TEST_ARCH_1,
-                        TEST_PACKAGE_1.to_owned(),
+                        &build_info_2.project,
+                        &repo_2.repo,
+                        &repo_2.arch,
+                        build_info_2.package,
                         MockBuildHistoryEntry {
                             bcnt: 999,
+                            srcmd5: build_info_2.srcmd5.unwrap(),
                             ..Default::default()
                         },
                     );
                 });
             }
 
-            run_obs_handler(context).await;
+            assert_ok!(
+                tokio::time::timeout(OLD_STATUS_SLEEP_DURATION * 10, run_obs_handler(context))
+                    .await
+            );
             assert_eq!(
                 monitor.state(),
                 if success && log_test != MonitorLogTest::Unavailable {
@@ -1445,10 +1467,15 @@ mod tests {
                 job_log.contains("unavailable"),
                 log_test == MonitorLogTest::Unavailable
             );
+
+            // If we reused a previous build, we're not waiting for a new build,
+            // so don't check for an old build status.
+            let build_actually_occurred = dput_test != DputTest::ReusePreviousBuild;
             assert_eq!(
                 job_log.contains("Old build status"),
-                info.prev_bcnt_for_commit.is_some()
+                build_actually_occurred
             );
+
             assert_eq!(
                 job_log.contains(&log_contents),
                 !success && log_test == MonitorLogTest::Short
@@ -1629,6 +1656,7 @@ mod tests {
                 dput.clone(),
                 &build_info,
                 build_success,
+                dput_test,
                 log_test,
                 download_binaries,
             )

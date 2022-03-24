@@ -163,6 +163,7 @@ impl ObsMonitor {
     #[instrument(skip(self, content))]
     fn check_log_md5(&self, content: &str) -> Result<()> {
         let needle = format!("srcmd5 '{}'", self.package.srcmd5);
+        debug!(%needle, %content);
         ensure!(
             content.contains(&needle),
             "Build logs are unavailable (overwritten by a later build revision?)"

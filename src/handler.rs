@@ -295,6 +295,7 @@ impl ObsJobHandler {
             BuildHistoryRetrieval::Full,
         )
         .await?;
+        debug!(?initial_build_meta);
 
         let result = uploader.upload_package(self).await?;
 

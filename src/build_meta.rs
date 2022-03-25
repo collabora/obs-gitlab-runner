@@ -76,6 +76,8 @@ impl BuildMeta {
         .await
         .wrap_err("Failed to get package meta")?;
 
+        debug!(?project_meta, ?package_meta);
+
         let mut disabled_repos = HashSet::new();
         let mut disabled_arches = HashSet::new();
         let mut disabled_repo_arch_combinations = HashSet::new();

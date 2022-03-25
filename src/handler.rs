@@ -40,6 +40,22 @@ const DEFAULT_PIPELINE_JOB_PREFIX: &str = "obs";
 const DEFAULT_ARTIFACT_EXPIRATION: &str = "3 days";
 const DEFAULT_BUILD_LOG: &str = "build.log";
 
+// Our flags can all take explicit values, because it makes it easier to
+// conditionally set things in the pipelines.
+trait FlagSupportingExplicitValue {
+    fn flag_supporting_explicit_value(self) -> Self;
+}
+
+impl FlagSupportingExplicitValue for clap::Arg<'_> {
+    fn flag_supporting_explicit_value(self) -> Self {
+        self.min_values(0)
+            .require_equals(true)
+            .required(false)
+            .default_value("false")
+            .default_missing_value("true")
+    }
+}
+
 #[derive(Parser, Debug)]
 struct DputAction {
     project: String,
@@ -48,7 +64,7 @@ struct DputAction {
     branch_to: String,
     #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned())]
     build_info_out: String,
-    #[clap(long)]
+    #[clap(long, parse(try_from_str), flag_supporting_explicit_value())]
     rebuild_if_unchanged: bool,
 }
 
@@ -109,9 +125,9 @@ struct DownloadBinariesAction {
 struct PruneAction {
     #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned())]
     build_info: String,
-    #[clap(long)]
+    #[clap(long, parse(try_from_str), flag_supporting_explicit_value())]
     ignore_missing_build_info: bool,
-    #[clap(long)]
+    #[clap(long, parse(try_from_str), flag_supporting_explicit_value())]
     only_if_job_unsuccessful: bool,
 }
 
@@ -119,8 +135,10 @@ struct PruneAction {
 #[derive(Parser, Debug)]
 struct EchoAction {
     args: Vec<String>,
-    #[clap(long)]
+    #[clap(long, parse(try_from_str), flag_supporting_explicit_value())]
     fail: bool,
+    #[clap(long, parse(try_from_str), flag_supporting_explicit_value())]
+    uppercase: bool,
     #[clap(long, default_value = " ")]
     sep: String,
 }
@@ -549,7 +567,12 @@ impl ObsJobHandler {
             Action::Echo(args) => {
                 use color_eyre::eyre::ensure;
 
-                outputln!("{}", args.args.join(&args.sep));
+                let mut output = args.args.join(&args.sep);
+                if args.uppercase {
+                    output = output.to_uppercase();
+                }
+
+                outputln!("{}", output);
                 ensure!(!args.fail, "Failed");
             }
         }
@@ -1702,6 +1725,71 @@ mod tests {
                 job_log.lines().last().unwrap(),
                 ";$ESCAPED;spaces should be preserved;recursion()"
             );
+        })
+        .await;
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_flag_parsing(#[future] test_context: (TestContext, GitlabLayer)) {
+        let (mut context, layer) = test_context.await;
+        with_tracing(layer, async {
+            let job = enqueue_job(
+                &context,
+                JobSpec {
+                    name: "flag".to_owned(),
+                    script: vec!["echo --uppercase false".to_owned()],
+                    ..Default::default()
+                },
+            );
+
+            run_obs_handler(&mut context).await;
+            assert_eq!(job.state(), MockJobState::Success);
+
+            let job_log = String::from_utf8_lossy(&job.log()).into_owned();
+            assert_eq!(job_log.lines().last().unwrap(), "FALSE");
+
+            let job = enqueue_job(
+                &context,
+                JobSpec {
+                    name: "flag".to_owned(),
+                    script: vec!["echo --uppercase=false true".to_owned()],
+                    ..Default::default()
+                },
+            );
+
+            run_obs_handler(&mut context).await;
+            assert_eq!(job.state(), MockJobState::Success);
+
+            let job_log = String::from_utf8_lossy(&job.log()).into_owned();
+            assert_eq!(job_log.lines().last().unwrap(), "true");
+
+            let job = enqueue_job(
+                &context,
+                JobSpec {
+                    name: "flag".to_owned(),
+                    script: vec!["echo --uppercase=true false".to_owned()],
+                    ..Default::default()
+                },
+            );
+
+            run_obs_handler(&mut context).await;
+            assert_eq!(job.state(), MockJobState::Success);
+
+            let job_log = String::from_utf8_lossy(&job.log()).into_owned();
+            assert_eq!(job_log.lines().last().unwrap(), "FALSE");
+
+            let job = enqueue_job(
+                &context,
+                JobSpec {
+                    name: "flag".to_owned(),
+                    script: vec!["echo --uppercase=X false".to_owned()],
+                    ..Default::default()
+                },
+            );
+
+            run_obs_handler(&mut context).await;
+            assert_eq!(job.state(), MockJobState::Failed);
         })
         .await;
     }

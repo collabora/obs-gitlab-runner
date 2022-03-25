@@ -55,6 +55,14 @@ A subset of shell syntax is supported for commands:
     ```
     There is no way to use a variable without auto-quoting its contents.
 
+#### Flags
+
+Any flag arguments shown below can also explicitly take a true/false value, e.g.
+`--rebuild-if-unchanged`, `--rebuild-if-unchanged=true`, and
+`--rebuild-if-unchanged=false`. This is primarily useful to conditionally set
+the value for a flag; you can set `SOME_VARIABLE=true/false` in your GitLab
+pipeline, then use that variable in a flag value as `--flag=$SOME_VARIABLE`.
+
 ### Required Environment
 
 In order to connect to OBS, three variables must be set (generally within the

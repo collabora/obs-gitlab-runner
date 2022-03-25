@@ -920,6 +920,9 @@ mod tests {
                         sleep_on_building: Duration::ZERO,
                         sleep_on_dirty: Duration::ZERO,
                         sleep_on_old_status: OLD_STATUS_SLEEP_DURATION,
+                        // High limit, since we don't really test that
+                        // functionality in the handler tests.
+                        max_old_status_retries: 99,
                     },
                 },
             ))

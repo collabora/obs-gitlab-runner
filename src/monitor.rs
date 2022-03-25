@@ -51,6 +51,7 @@ pub struct PackageMonitoringOptions {
     pub sleep_on_building: Duration,
     pub sleep_on_dirty: Duration,
     pub sleep_on_old_status: Duration,
+    pub max_old_status_retries: usize,
 }
 
 impl Default for PackageMonitoringOptions {
@@ -59,6 +60,7 @@ impl Default for PackageMonitoringOptions {
             sleep_on_building: Duration::from_secs(10),
             sleep_on_dirty: Duration::from_secs(30),
             sleep_on_old_status: Duration::from_secs(15),
+            max_old_status_retries: 5,
         }
     }
 }
@@ -197,6 +199,7 @@ impl ObsMonitor {
         outputln!("Live build log: {}", log_url);
 
         let mut previous_code = None;
+        let mut old_status_retries = 0;
 
         loop {
             match self.get_latest_state().await? {
@@ -217,6 +220,12 @@ impl ObsMonitor {
                     tokio::time::sleep(options.sleep_on_dirty).await;
                 }
                 PackageBuildState::PendingStatusPosted => {
+                    ensure!(
+                        old_status_retries < options.max_old_status_retries,
+                        "Old build status has been posted for too long."
+                    );
+                    old_status_retries += 1;
+
                     outputln!("Old build status still posted, trying again later...");
                     tokio::time::sleep(options.sleep_on_old_status).await;
                 }
@@ -780,5 +789,62 @@ mod tests {
             state,
             PackageBuildState::Completed(PackageCompletion::Succeeded)
         );
+    }
+
+    #[tokio::test]
+    async fn test_fails_after_repeated_bcnt_rejections() {
+        let srcmd5 = random_md5();
+
+        let mock = create_default_mock().await;
+
+        mock.add_project(TEST_PROJECT.to_owned());
+        mock.add_new_package(
+            TEST_PROJECT,
+            TEST_PACKAGE_1.to_owned(),
+            MockPackageOptions::default(),
+        );
+
+        mock.add_package_revision(
+            TEST_PROJECT,
+            TEST_PACKAGE_1,
+            MockRevisionOptions {
+                srcmd5: srcmd5.clone(),
+                ..Default::default()
+            },
+            HashMap::new(),
+        );
+
+        mock.add_or_update_repository(
+            TEST_PROJECT,
+            TEST_REPO.to_owned(),
+            TEST_ARCH_1.to_owned(),
+            MockRepositoryCode::Building,
+        );
+
+        let client = create_default_client(&mock);
+        let monitor = ObsMonitor::new(
+            client.clone(),
+            MonitoredPackage {
+                project: TEST_PROJECT.to_owned(),
+                package: TEST_PACKAGE_1.to_owned(),
+                repository: TEST_REPO.to_owned(),
+                arch: TEST_ARCH_1.to_owned(),
+                rev: "1".to_owned(),
+                srcmd5: srcmd5.clone(),
+                prev_bcnt_for_commit: None,
+            },
+        );
+
+        let options = PackageMonitoringOptions {
+            sleep_on_old_status: Duration::from_millis(100),
+            max_old_status_retries: 4,
+            ..Default::default()
+        };
+
+        let result = assert_ok!(
+            tokio::time::timeout(Duration::from_secs(5), monitor.monitor_package(options)).await
+        );
+        let err = assert_err!(result);
+        assert!(err.to_string().contains("Old build status"), "{:?}", err);
     }
 }

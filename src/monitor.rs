@@ -142,7 +142,12 @@ impl ObsMonitor {
             })
             .await
             .wrap_err("Failed to get history")?;
-            let prev_bcnt_for_commit = history.entries.last().map(|e| e.bcnt.as_str());
+            let prev_bcnt_for_commit = history
+                .entries
+                .iter()
+                .rev()
+                .find(|e| e.srcmd5 == self.package.srcmd5)
+                .map(|e| e.bcnt.as_str());
 
             debug!(?prev_bcnt_for_commit);
             if prev_bcnt_for_commit == self.package.prev_bcnt_for_commit.as_deref() {
@@ -736,6 +741,22 @@ mod tests {
                 rev: "1".to_owned(),
                 srcmd5: srcmd5.clone(),
                 prev_bcnt_for_commit: Some(bcnt_1.to_string()),
+            },
+        );
+
+        let state = assert_ok!(monitor.get_latest_state().await);
+        assert_matches!(state, PackageBuildState::PendingStatusPosted);
+
+        // Make sure a different srcmd5 with a new bcnt isn't picked up.
+        mock.add_build_history(
+            TEST_PROJECT,
+            TEST_REPO,
+            TEST_ARCH_1,
+            TEST_PACKAGE_1.to_owned(),
+            MockBuildHistoryEntry {
+                srcmd5: srcmd5.clone() + &srcmd5,
+                bcnt: bcnt_2,
+                ..Default::default()
             },
         );
 

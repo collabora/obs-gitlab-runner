@@ -257,4 +257,47 @@ branched project/package if e.g. the upload failed.
 
 ## Deployment
 
-TODO
+### Docker
+
+Docker images are built on every commit, available at
+`ghcr.io/collabora/obs-gitlab-runner:main`. The entry point takes two arguments:
+
+- The GitLab server URL.
+- A [runner token](https://docs.gitlab.com/runner/register/#requirements).
+
+Simple example usage via the Docker CLI:
+
+```bash
+$ docker run --rm -it ghcr.io/collabora/obs-gitlab-runner:main \
+    "$GITLAB_SERVER_URL" "$GITLAB_RUNNER_TOKEN"
+```
+
+In addition, you can instead opt to set the `GITLAB_URL` and `GITLAB_TOKEN`
+environment variables:
+
+```bash
+$ docker run --rm -it \
+    -e GITLAB_URL="$GITLAB_SERVER_URL" \
+    -e GITLAB_TOKEN="$GITLAB_RUNNER_TOKEN" \
+    ghcr.io/collabora/obs-gitlab-runner:mian
+```
+
+### Kubernetes
+
+A [Helm](https://helm.sh/) chart has been provided in the `chart/` directory,
+installable via:
+
+```bash
+$ helm install \
+    --set-string gitlab.url="$GITLAB_SERVER_URL" \
+    --set-string gitlab.token="$GITLAB_RUNNER_TOKEN" \
+    obs-gitlab-runner chart
+```
+
+Upgrades can skip setting `gitlab.token` to re-use the previously set value:
+
+```bash
+$ helm upgrade \
+    --set-string gitlab.url="$GITLAB_SERVER_URL" \
+    obs-gitlab-runner chart
+```

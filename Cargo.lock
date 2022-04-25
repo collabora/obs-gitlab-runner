@@ -1007,8 +1007,8 @@ checksum = "78cc372d058dcf6d5ecd98510e7fbc9e5aec4d21de70f65fea8fecebcd881bd4"
 
 [[package]]
 name = "gitlab-runner"
-version = "0.0.2-alpha.3"
-source = "git+https://github.com/collabora/gitlab-runner-rs#177762af44a5a470376b8cca24af0b92fa787c6e"
+version = "0.0.2"
+source = "git+https://github.com/refi64/gitlab-runner-rs?branch=zip-oom#6e7a2901e0ccd04f207f29d0033c2f17512d4391"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1022,6 +1022,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util 0.7.0",
  "tracing",
  "tracing-subscriber",
  "url 2.2.2",

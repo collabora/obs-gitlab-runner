@@ -1460,7 +1460,7 @@ mod tests {
                 let build_info_2 = build_info.clone();
                 let repo_2 = repo.clone();
                 tokio::spawn(async move {
-                    tokio::time::sleep(OLD_STATUS_SLEEP_DURATION * 2).await;
+                    tokio::time::sleep(OLD_STATUS_SLEEP_DURATION * 10).await;
                     mock.add_build_history(
                         &build_info_2.project,
                         &repo_2.repo,
@@ -1476,7 +1476,7 @@ mod tests {
             }
 
             assert_ok!(
-                tokio::time::timeout(OLD_STATUS_SLEEP_DURATION * 10, run_obs_handler(context))
+                tokio::time::timeout(OLD_STATUS_SLEEP_DURATION * 20, run_obs_handler(context))
                     .await
             );
             assert_eq!(

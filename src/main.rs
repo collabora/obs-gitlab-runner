@@ -67,6 +67,15 @@ enum LogFormat {
     Json,
 }
 
+fn parse_max_jobs(s: &str) -> Result<usize, String> {
+    let value = s.parse().map_err(|e| format!("{}", e))?;
+    if value >= 1 {
+        Ok(value)
+    } else {
+        Err("must be >= 1".to_owned())
+    }
+}
+
 #[derive(Parser)]
 struct Args {
     #[clap(env = "GITLAB_URL")]
@@ -77,6 +86,8 @@ struct Args {
     log: TargetsArg,
     #[clap(long, env = "OBS_RUNNER_LOG_FORMAT", default_value_t = LogFormat::Pretty)]
     log_format: LogFormat,
+    #[clap(long, env = "OBS_RUNNER_MAX_JOBS", default_value_t = 64, parse(try_from_str=parse_max_jobs))]
+    max_jobs: usize,
 }
 
 fn formatter_layer<E, S>(format: E, targets: Targets) -> impl Layer<S>
@@ -91,8 +102,6 @@ where
 
 #[tokio::main]
 async fn main() {
-    const MAX_JOBS: usize = 64;
-
     let args = Args::parse();
     let temp = tempfile::tempdir().expect("Failed to create temporary directory");
     let (mut runner, layer) =
@@ -135,7 +144,7 @@ async fn main() {
                     },
                 )
             },
-            MAX_JOBS,
+            args.max_jobs,
         )
         .await
         .expect("Failed to pick up incoming jobs");

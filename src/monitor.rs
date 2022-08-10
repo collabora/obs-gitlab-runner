@@ -60,7 +60,7 @@ impl Default for PackageMonitoringOptions {
             sleep_on_building: Duration::from_secs(10),
             sleep_on_dirty: Duration::from_secs(30),
             sleep_on_old_status: Duration::from_secs(15),
-            max_old_status_retries: 5,
+            max_old_status_retries: 20, // 15 seconds * 20 tries = 5 minutes
         }
     }
 }
@@ -224,9 +224,12 @@ impl ObsMonitor {
                         old_status_retries < options.max_old_status_retries,
                         "Old build status has been posted for too long."
                     );
+
+                    if old_status_retries == 0 {
+                        outputln!("Waiting for build status to be available...");
+                    }
                     old_status_retries += 1;
 
-                    outputln!("Old build status still posted, trying again later...");
                     tokio::time::sleep(options.sleep_on_old_status).await;
                 }
                 PackageBuildState::Completed(reason) => {

@@ -1499,7 +1499,7 @@ mod tests {
             // so don't check for an old build status.
             let build_actually_occurred = dput_test != DputTest::ReusePreviousBuild;
             assert_eq!(
-                job_log.contains("Old build status"),
+                job_log.contains("Waiting for build status"),
                 build_actually_occurred
             );
 

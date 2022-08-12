@@ -60,7 +60,7 @@ impl Default for PackageMonitoringOptions {
             sleep_on_building: Duration::from_secs(10),
             sleep_on_dirty: Duration::from_secs(30),
             sleep_on_old_status: Duration::from_secs(15),
-            max_old_status_retries: 20, // 15 seconds * 20 tries = 5 minutes
+            max_old_status_retries: 40, // 15 seconds * 40 tries = 10 minutes
         }
     }
 }
@@ -202,7 +202,9 @@ impl ObsMonitor {
         let mut old_status_retries = 0;
 
         loop {
-            match self.get_latest_state().await? {
+            let state = self.get_latest_state().await?;
+
+            match state {
                 PackageBuildState::Building(code) => {
                     if previous_code != Some(code) {
                         if previous_code.is_some() {
@@ -235,6 +237,12 @@ impl ObsMonitor {
                 PackageBuildState::Completed(reason) => {
                     return Ok(reason);
                 }
+            }
+
+            // Reset the retry count out here if we didn't have an old status
+            // again.
+            if !matches!(state, PackageBuildState::PendingStatusPosted) {
+                old_status_retries = 0;
             }
         }
     }

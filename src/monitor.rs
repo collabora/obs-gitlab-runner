@@ -200,6 +200,7 @@ impl ObsMonitor {
 
         let mut previous_code = None;
         let mut old_status_retries = 0;
+        let mut was_dirty = false;
 
         loop {
             let state = self.get_latest_state().await?;
@@ -218,7 +219,11 @@ impl ObsMonitor {
                     tokio::time::sleep(options.sleep_on_building).await;
                 }
                 PackageBuildState::Dirty => {
-                    outputln!("Package is dirty, trying again later...");
+                    if !was_dirty {
+                        outputln!("Package is dirty, trying again later...");
+                    }
+
+                    was_dirty = true;
                     tokio::time::sleep(options.sleep_on_dirty).await;
                 }
                 PackageBuildState::PendingStatusPosted => {
@@ -243,6 +248,9 @@ impl ObsMonitor {
             // again.
             if !matches!(state, PackageBuildState::PendingStatusPosted) {
                 old_status_retries = 0;
+            }
+            if !matches!(state, PackageBuildState::Dirty) {
+                was_dirty = false;
             }
         }
     }

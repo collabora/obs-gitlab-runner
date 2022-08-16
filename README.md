@@ -257,13 +257,57 @@ branched project/package if e.g. the upload failed.
 
 ## Deployment
 
+### Registering the Runner
+
+In order to use the runner, you must first register it with your GitLab
+instance. This requires the use of a registration token, which can be obtained
+via the following steps:
+
+- Enter the GitLab admin area.
+- Navigate to Overview -> Runners.
+- Click "Register an instance runner".
+- Copy the registration token within.
+
+(Per-group/-project registration tokens can also be retrieved from the CI/CD
+settings of the group or project.)
+
+With this token, you can now register the runner via the [GitLab
+API](https://docs.gitlab.com/ee/api/runners.html#register-a-new-runner).
+
+Example using curl:
+
+```bash
+curl --request POST "https://$GITLAB_SERVER_URL/api/v4/runners"  \
+  --form description='OBS runner' \
+  --form run_untagged=false \
+  --form tag_list=obs-runner \
+  --form token="$REGISTRATION_TOKEN"
+```
+
+httpie:
+
+```bash
+http --form POST "https://$GITLAB_SERVER_URL/api/v4/runners" \
+  description='OBS runner' \
+  run_untagged=false \
+  tag_list=obs-runner \
+  token="$REGISTRATION_TOKEN"
+```
+
+**It is critical that you set `run_untagged=false`,** otherwise this runner
+will be used for *all* jobs that don't explicitly set a tag, rather than just
+the jobs explicitly targeting the runner.
+
+This API call will return a JSON object containing a `token` key, whose value
+is a _runner token_ that is used by the runner to connect to GitLab.
+
 ### Docker
 
 Docker images are built on every commit, available at
 `ghcr.io/collabora/obs-gitlab-runner:main`. The entry point takes two arguments:
 
 - The GitLab server URL.
-- A [runner token](https://docs.gitlab.com/runner/register/#requirements).
+- The runner token acquired previously.
 
 Simple example usage via the Docker CLI:
 
@@ -279,7 +323,7 @@ environment variables:
 $ docker run --rm -it \
     -e GITLAB_URL="$GITLAB_SERVER_URL" \
     -e GITLAB_TOKEN="$GITLAB_RUNNER_TOKEN" \
-    ghcr.io/collabora/obs-gitlab-runner:mian
+    ghcr.io/collabora/obs-gitlab-runner:main
 ```
 
 ### Kubernetes

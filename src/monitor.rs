@@ -99,6 +99,7 @@ impl ObsMonitor {
             return Ok(PackageBuildState::Completed(PackageCompletion::Superceded));
         }
 
+        let client_project = self.client.project(self.package.project.clone());
         let client_package = self
             .client
             .project(self.package.project.clone())
@@ -137,15 +138,20 @@ impl ObsMonitor {
             // sure there is a build *newer* that the last bcnt we have
             // recorded.
 
-            let history = retry_request(|| async {
-                client_package
-                    .history(&self.package.repository, &self.package.arch)
+            let jobhist = retry_request(|| async {
+                client_project
+                    .jobhistory(
+                        &self.package.repository,
+                        &self.package.arch,
+                        &obs::JobHistoryFilters::only_package(self.package.package.clone()),
+                    )
                     .await
             })
             .await
-            .wrap_err("Failed to get history")?;
-            let prev_bcnt_for_commit = history
-                .entries
+            .wrap_err("Failed to get jobhistory")?;
+            debug!(?jobhist.jobhist);
+            let prev_bcnt_for_commit = jobhist
+                .jobhist
                 .iter()
                 .rev()
                 .find(|e| e.srcmd5 == self.package.srcmd5)
@@ -565,12 +571,12 @@ mod tests {
                 ..Default::default()
             },
         );
-        mock.add_build_history(
+        mock.add_job_history(
             TEST_PROJECT,
             TEST_REPO,
             TEST_ARCH_1,
-            TEST_PACKAGE_1.to_owned(),
-            MockBuildHistoryEntry {
+            MockJobHistoryEntry {
+                package: TEST_PACKAGE_1.to_owned(),
                 srcmd5: srcmd5.clone(),
                 ..Default::default()
             },
@@ -667,12 +673,12 @@ mod tests {
             TEST_PACKAGE_1.to_owned(),
             MockBuildStatus::new(MockPackageCode::Succeeded),
         );
-        mock.add_build_history(
+        mock.add_job_history(
             TEST_PROJECT,
             TEST_REPO,
             TEST_ARCH_1,
-            TEST_PACKAGE_1.to_owned(),
-            MockBuildHistoryEntry {
+            MockJobHistoryEntry {
+                package: TEST_PACKAGE_1.to_owned(),
                 srcmd5: srcmd5.clone(),
                 ..Default::default()
             },
@@ -741,12 +747,12 @@ mod tests {
             TEST_PACKAGE_1.to_owned(),
             MockBuildStatus::new(MockPackageCode::Succeeded),
         );
-        mock.add_build_history(
+        mock.add_job_history(
             TEST_PROJECT,
             TEST_REPO,
             TEST_ARCH_1,
-            TEST_PACKAGE_1.to_owned(),
-            MockBuildHistoryEntry {
+            MockJobHistoryEntry {
+                package: TEST_PACKAGE_1.to_owned(),
                 srcmd5: srcmd5.clone(),
                 bcnt: bcnt_1,
                 ..Default::default()
@@ -776,12 +782,12 @@ mod tests {
         assert_matches!(state, PackageBuildState::PendingStatusPosted);
 
         // Make sure a different srcmd5 with a new bcnt isn't picked up.
-        mock.add_build_history(
+        mock.add_job_history(
             TEST_PROJECT,
             TEST_REPO,
             TEST_ARCH_1,
-            TEST_PACKAGE_1.to_owned(),
-            MockBuildHistoryEntry {
+            MockJobHistoryEntry {
+                package: TEST_PACKAGE_1.to_owned(),
                 srcmd5: srcmd5.clone() + &srcmd5,
                 bcnt: bcnt_2,
                 ..Default::default()
@@ -791,12 +797,12 @@ mod tests {
         let state = assert_ok!(monitor.get_latest_state().await);
         assert_matches!(state, PackageBuildState::PendingStatusPosted);
 
-        mock.add_build_history(
+        mock.add_job_history(
             TEST_PROJECT,
             TEST_REPO,
             TEST_ARCH_1,
-            TEST_PACKAGE_1.to_owned(),
-            MockBuildHistoryEntry {
+            MockJobHistoryEntry {
+                package: TEST_PACKAGE_1.to_owned(),
                 srcmd5: srcmd5.clone(),
                 bcnt: bcnt_2,
                 ..Default::default()

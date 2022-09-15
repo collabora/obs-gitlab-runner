@@ -20,7 +20,7 @@ pub struct CommitBuildInfo {
 
 #[derive(Debug)]
 pub struct BuildMeta {
-    pub enabled_repos: HashMap<RepoArch, obs::BuildHistory>,
+    pub enabled_repos: HashMap<RepoArch, obs::JobHistList>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,21 +109,24 @@ impl BuildMeta {
                     continue;
                 }
 
-                let history = match history_retrieval {
+                let jobhist = match history_retrieval {
                     BuildHistoryRetrieval::Full => {
                         retry_request(|| async {
                             client
                                 .project(project.to_owned())
-                                .package(package.to_owned())
-                                .history(&repo_meta.name, &arch)
+                                .jobhistory(
+                                    &repo_meta.name,
+                                    &arch,
+                                    &obs::JobHistoryFilters::only_package(package.to_owned()),
+                                )
                                 .instrument(
-                                    info_span!("get:history", repo = %repo_meta.name, %arch),
+                                    info_span!("get:jobhist", repo = %repo_meta.name, %arch),
                                 )
                                 .await
                         })
                         .await?
                     }
-                    BuildHistoryRetrieval::None => obs::BuildHistory { entries: vec![] },
+                    BuildHistoryRetrieval::None => obs::JobHistList { jobhist: vec![] },
                 };
 
                 enabled_repos.insert(
@@ -131,7 +134,7 @@ impl BuildMeta {
                         repo: repo_meta.name.clone(),
                         arch,
                     },
-                    history,
+                    jobhist,
                 );
             }
         }
@@ -140,17 +143,17 @@ impl BuildMeta {
     }
 
     pub fn clear_stored_history(&mut self) {
-        for history in self.enabled_repos.values_mut() {
-            history.entries.clear();
+        for jobhist in self.enabled_repos.values_mut() {
+            jobhist.jobhist.clear();
         }
     }
 
     pub fn get_commit_build_info(&self, srcmd5: &str) -> HashMap<RepoArch, CommitBuildInfo> {
         let mut repos = HashMap::new();
 
-        for (repo, history) in &self.enabled_repos {
-            let prev_bcnt_for_commit = history
-                .entries
+        for (repo, jobhist) in &self.enabled_repos {
+            let prev_bcnt_for_commit = jobhist
+                .jobhist
                 .iter()
                 .filter(|e| e.srcmd5 == srcmd5)
                 .last()
@@ -218,12 +221,12 @@ mod tests {
             MockRepositoryCode::Finished,
         );
 
-        mock.add_build_history(
+        mock.add_job_history(
             TEST_PROJECT,
             TEST_REPO,
             TEST_ARCH_1,
-            TEST_PACKAGE_1.to_owned(),
-            MockBuildHistoryEntry {
+            MockJobHistoryEntry {
+                package: TEST_PACKAGE_1.to_owned(),
                 rev: rev_1.to_owned(),
                 srcmd5: srcmd5_1.clone(),
                 bcnt: bcnt_1,
@@ -231,12 +234,12 @@ mod tests {
             },
         );
 
-        mock.add_build_history(
+        mock.add_job_history(
             TEST_PROJECT,
             TEST_REPO,
             TEST_ARCH_2,
-            TEST_PACKAGE_1.to_owned(),
-            MockBuildHistoryEntry {
+            MockJobHistoryEntry {
+                package: TEST_PACKAGE_1.to_owned(),
                 rev: rev_2.to_owned(),
                 srcmd5: srcmd5_2.clone(),
                 bcnt: bcnt_2,
@@ -300,12 +303,12 @@ mod tests {
             },
         );
 
-        mock.add_build_history(
+        mock.add_job_history(
             TEST_PROJECT,
             TEST_REPO,
             TEST_ARCH_1,
-            TEST_PACKAGE_1.to_owned(),
-            MockBuildHistoryEntry {
+            MockJobHistoryEntry {
+                package: TEST_PACKAGE_1.to_owned(),
                 rev: rev_1.to_owned(),
                 srcmd5: srcmd5_1.clone(),
                 bcnt: bcnt_2,
@@ -341,12 +344,12 @@ mod tests {
             },
         );
 
-        mock.add_build_history(
+        mock.add_job_history(
             TEST_PROJECT,
             TEST_REPO,
             TEST_ARCH_2,
-            TEST_PACKAGE_1.to_owned(),
-            MockBuildHistoryEntry {
+            MockJobHistoryEntry {
+                package: TEST_PACKAGE_1.to_owned(),
                 rev: rev_1.to_owned(),
                 srcmd5: srcmd5_1.clone(),
                 bcnt: bcnt_1,

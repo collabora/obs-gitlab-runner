@@ -467,8 +467,11 @@ impl ObsJobHandler {
                     self.job.trace(String::from_utf8_lossy(&bytes).as_ref());
                 }
 
-                self.job.trace("\n\n(last <=2MB of logs printed above)\n");
-                outputln!("Build failed with reason '{:?}'.", reason);
+                outputln!("{}", "=".repeat(64));
+                outputln!(
+                    "Build failed with reason '{}'.",
+                    reason.to_string().to_lowercase()
+                );
                 outputln!("The last 2MB of the build log is printed above.");
                 outputln!(
                     "(Full logs are available in the build artifact '{}'.)",
@@ -1066,24 +1069,24 @@ mod tests {
             // Testing of reused builds never had the second arch disabled, so
             // also add that build history.
             if test == DputTest::ReusePreviousBuild {
-                context.obs_mock.add_build_history(
+                context.obs_mock.add_job_history(
                     TEST_PROJECT,
                     TEST_REPO,
                     TEST_ARCH_2,
-                    TEST_PACKAGE_1.to_owned(),
-                    MockBuildHistoryEntry {
+                    MockJobHistoryEntry {
+                        package: TEST_PACKAGE_1.to_owned(),
                         rev: dir.rev.clone().unwrap(),
                         srcmd5: dir.srcmd5.clone(),
                         ..Default::default()
                     },
                 );
             }
-            context.obs_mock.add_build_history(
+            context.obs_mock.add_job_history(
                 TEST_PROJECT,
                 TEST_REPO,
                 TEST_ARCH_1,
-                TEST_PACKAGE_1.to_owned(),
-                MockBuildHistoryEntry {
+                MockJobHistoryEntry {
+                    package: TEST_PACKAGE_1.to_owned(),
                     rev: dir.rev.unwrap(),
                     srcmd5: dir.srcmd5,
                     ..Default::default()
@@ -1461,12 +1464,12 @@ mod tests {
                 let repo_2 = repo.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(OLD_STATUS_SLEEP_DURATION * 10).await;
-                    mock.add_build_history(
+                    mock.add_job_history(
                         &build_info_2.project,
                         &repo_2.repo,
                         &repo_2.arch,
-                        build_info_2.package,
-                        MockBuildHistoryEntry {
+                        MockJobHistoryEntry {
+                            package: build_info_2.package,
                             bcnt: 999,
                             srcmd5: build_info_2.srcmd5.unwrap(),
                             ..Default::default()

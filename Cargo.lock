@@ -1752,7 +1752,7 @@ checksum = "624a8340c38c1b80fd549087862da4ba43e08858af025b236e509b6649fc13d5"
 [[package]]
 name = "open-build-service-api"
 version = "0.1.0"
-source = "git+https://github.com/collabora/open-build-service-rs#cce42e9f8b6e82933c96eb9d18c400c1a9caf940"
+source = "git+https://github.com/collabora/open-build-service-rs#057b07290786d010a4190239cbfd0965cff667c4"
 dependencies = [
  "base16ct",
  "bytes",
@@ -1770,7 +1770,7 @@ dependencies = [
 [[package]]
 name = "open-build-service-mock"
 version = "0.1.0"
-source = "git+https://github.com/collabora/open-build-service-rs#cce42e9f8b6e82933c96eb9d18c400c1a9caf940"
+source = "git+https://github.com/collabora/open-build-service-rs#057b07290786d010a4190239cbfd0965cff667c4"
 dependencies = [
  "base16ct",
  "http-types",

@@ -99,12 +99,12 @@ impl ObsMonitor {
             return Ok(PackageBuildState::Completed(PackageCompletion::Superceded));
         }
 
-        let clinet_package = self
+        let client_package = self
             .client
             .project(self.package.project.clone())
             .package(self.package.package.clone());
 
-        let all_results = retry_request(|| async { clinet_package.result().await }).await?;
+        let all_results = retry_request(|| async { client_package.result().await }).await?;
 
         // TODO: filter this in the API call instead of afterwards
         let result = all_results
@@ -138,7 +138,7 @@ impl ObsMonitor {
             // recorded.
 
             let history = retry_request(|| async {
-                clinet_package
+                client_package
                     .history(&self.package.repository, &self.package.arch)
                     .await
             })

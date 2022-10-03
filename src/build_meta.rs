@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use color_eyre::eyre::{Result, WrapErr};
 use open_build_service_api as obs;
@@ -66,45 +66,33 @@ impl BuildMeta {
             retry_request(|| async { client.project(project.to_owned()).meta().await })
                 .await
                 .wrap_err("Failed to get project meta")?;
-        let package_meta = retry_request(|| async {
-            client
-                .project(project.to_owned())
-                .package(package.to_owned())
-                .meta()
-                .await
-        })
-        .await
-        .wrap_err("Failed to get package meta")?;
 
-        debug!(?project_meta, ?package_meta);
-
-        let mut disabled_repos = HashSet::new();
-        let mut disabled_arches = HashSet::new();
-        let mut disabled_repo_arch_combinations = HashSet::new();
-
-        for disabled_build in &package_meta.build.disabled {
-            match (&disabled_build.repository, &disabled_build.arch) {
-                (Some(repo), Some(arch)) => {
-                    disabled_repo_arch_combinations.insert((repo, arch));
-                }
-                (Some(repo), None) => {
-                    disabled_repos.insert(repo);
-                }
-                (None, Some(arch)) => {
-                    disabled_arches.insert(arch);
-                }
-                (None, None) => {}
-            }
-        }
+        debug!(?project_meta);
 
         let mut enabled_repos = HashMap::new();
 
         for repo_meta in project_meta.repositories {
             for arch in repo_meta.arches {
-                if disabled_repos.contains(&repo_meta.name)
-                    || disabled_arches.contains(&arch)
-                    || disabled_repo_arch_combinations.contains(&(&repo_meta.name, &arch))
-                {
+                let status = retry_request(|| async {
+                    client
+                        .project(project.to_owned())
+                        .package(package.to_owned())
+                        .status(&repo_meta.name, &arch)
+                        .await
+                })
+                .await
+                .wrap_err_with(|| {
+                    format!(
+                        "Failed to get status of {}/{}/{}/{}",
+                        project, repo_meta.name, arch, package
+                    )
+                })?;
+                debug!(?status);
+
+                if matches!(
+                    status.code,
+                    obs::PackageCode::Disabled | obs::PackageCode::Excluded
+                ) {
                     debug!(repo = %repo_meta.name, %arch, "Disabling");
                     continue;
                 }
@@ -291,16 +279,12 @@ mod tests {
 
         assert!(meta.enabled_repos.contains_key(&repo_arch_2));
 
-        mock.set_package_metadata(
+        mock.set_package_build_status(
             TEST_PROJECT,
-            TEST_PACKAGE_1,
-            MockPackageOptions {
-                disabled: vec![MockPackageDisabledBuild {
-                    repository: Some(TEST_REPO.to_owned()),
-                    arch: Some(TEST_ARCH_1.to_owned()),
-                }],
-                ..Default::default()
-            },
+            TEST_REPO,
+            TEST_ARCH_1,
+            TEST_PACKAGE_1.to_owned(),
+            MockBuildStatus::new(MockPackageCode::Disabled),
         );
 
         mock.add_job_history(
@@ -331,18 +315,6 @@ mod tests {
 
         let arch_1 = assert_some!(build_info.get(&repo_arch_2));
         assert_some_eq!(arch_1.prev_bcnt_for_commit.as_deref(), &bcnt_2.to_string());
-
-        mock.set_package_metadata(
-            TEST_PROJECT,
-            TEST_PACKAGE_1,
-            MockPackageOptions {
-                disabled: vec![MockPackageDisabledBuild {
-                    repository: None,
-                    arch: Some(TEST_ARCH_1.to_owned()),
-                }],
-                ..Default::default()
-            },
-        );
 
         mock.add_job_history(
             TEST_PROJECT,
@@ -379,16 +351,12 @@ mod tests {
         let arch_2 = assert_some!(build_info.get(&repo_arch_2));
         assert_none!(arch_2.prev_bcnt_for_commit.as_deref());
 
-        mock.set_package_metadata(
+        mock.set_package_build_status(
             TEST_PROJECT,
-            TEST_PACKAGE_1,
-            MockPackageOptions {
-                disabled: vec![MockPackageDisabledBuild {
-                    repository: Some(TEST_REPO.to_owned()),
-                    arch: None,
-                }],
-                ..Default::default()
-            },
+            TEST_REPO,
+            TEST_ARCH_2,
+            TEST_PACKAGE_1.to_owned(),
+            MockBuildStatus::new(MockPackageCode::Excluded),
         );
 
         let meta = assert_ok!(

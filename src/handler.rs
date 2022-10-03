@@ -982,13 +982,14 @@ mod tests {
             context.obs_mock.add_new_package(
                 TEST_PROJECT,
                 TEST_PACKAGE_1.to_owned(),
-                MockPackageOptions {
-                    disabled: vec![MockPackageDisabledBuild {
-                        repository: None,
-                        arch: Some(TEST_ARCH_2.to_owned()),
-                    }],
-                    ..Default::default()
-                },
+                MockPackageOptions::default(),
+            );
+            context.obs_mock.set_package_build_status(
+                TEST_PROJECT,
+                TEST_REPO,
+                TEST_ARCH_2,
+                TEST_PACKAGE_1.to_owned(),
+                MockBuildStatus::new(MockPackageCode::Disabled),
             );
         }
 

@@ -43,7 +43,7 @@ pub struct MonitoredPackage {
     pub arch: String,
     pub rev: String,
     pub srcmd5: String,
-    pub prev_bcnt_for_commit: Option<String>,
+    pub prev_endtime_for_commit: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -135,7 +135,7 @@ impl ObsMonitor {
             // Similarly to above, there is a small gap after a commit where the
             // previous build status is still posted. To ensure the build that's
             // now final is actually our own, check the build history to make
-            // sure there is a build *newer* that the last bcnt we have
+            // sure there is a build *newer* that the last endtime we have
             // recorded.
 
             let jobhist = retry_request(|| async {
@@ -150,15 +150,15 @@ impl ObsMonitor {
             .await
             .wrap_err("Failed to get jobhistory")?;
             debug!(?jobhist.jobhist);
-            let prev_bcnt_for_commit = jobhist
+            let prev_endtime_for_commit = jobhist
                 .jobhist
                 .iter()
                 .rev()
                 .find(|e| e.srcmd5 == self.package.srcmd5)
-                .map(|e| e.bcnt.as_str());
+                .map(|e| e.endtime);
 
-            debug!(?prev_bcnt_for_commit);
-            if prev_bcnt_for_commit == self.package.prev_bcnt_for_commit.as_deref() {
+            debug!(?prev_endtime_for_commit);
+            if prev_endtime_for_commit == self.package.prev_endtime_for_commit {
                 return Ok(PackageBuildState::PendingStatusPosted);
             }
 
@@ -306,7 +306,7 @@ impl ObsMonitor {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, time::SystemTime};
 
     use claim::*;
     use obs::PackageCode;
@@ -351,7 +351,7 @@ mod tests {
                 arch: TEST_ARCH_1.to_owned(),
                 rev: "1".to_owned(),
                 srcmd5: srcmd5.clone(),
-                prev_bcnt_for_commit: None,
+                prev_endtime_for_commit: None,
             },
         );
 
@@ -380,7 +380,7 @@ mod tests {
                 arch: TEST_ARCH_1.to_owned(),
                 rev: "1".to_owned(),
                 srcmd5: branch_xsrcmd5.clone(),
-                prev_bcnt_for_commit: None,
+                prev_endtime_for_commit: None,
             },
         );
 
@@ -444,7 +444,7 @@ mod tests {
                 arch: TEST_ARCH_1.to_owned(),
                 rev: "1".to_owned(),
                 srcmd5: srcmd5.clone(),
-                prev_bcnt_for_commit: None,
+                prev_endtime_for_commit: None,
             },
         );
 
@@ -540,7 +540,7 @@ mod tests {
                 arch: TEST_ARCH_1.to_owned(),
                 rev: "1".to_owned(),
                 srcmd5: srcmd5.clone(),
-                prev_bcnt_for_commit: None,
+                prev_endtime_for_commit: None,
             },
         );
 
@@ -659,7 +659,7 @@ mod tests {
                 arch: TEST_ARCH_1.to_owned(),
                 rev: "1".to_owned(),
                 srcmd5: srcmd5.clone(),
-                prev_bcnt_for_commit: None,
+                prev_endtime_for_commit: None,
             },
         );
 
@@ -692,10 +692,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handles_old_bcnt_status() {
+    async fn test_handles_old_build_status() {
         let srcmd5 = random_md5();
-        let bcnt_1 = 1;
-        let bcnt_2 = 2;
+        let endtime_1 = 100;
+        let endtime_2 = 200;
 
         let mock = create_default_mock().await;
 
@@ -733,7 +733,7 @@ mod tests {
                 arch: TEST_ARCH_1.to_owned(),
                 rev: "1".to_owned(),
                 srcmd5: srcmd5.clone(),
-                prev_bcnt_for_commit: None,
+                prev_endtime_for_commit: None,
             },
         );
 
@@ -754,7 +754,7 @@ mod tests {
             MockJobHistoryEntry {
                 package: TEST_PACKAGE_1.to_owned(),
                 srcmd5: srcmd5.clone(),
-                bcnt: bcnt_1,
+                endtime: SystemTime::UNIX_EPOCH + Duration::from_secs(endtime_1),
                 ..Default::default()
             },
         );
@@ -774,14 +774,14 @@ mod tests {
                 arch: TEST_ARCH_1.to_owned(),
                 rev: "1".to_owned(),
                 srcmd5: srcmd5.clone(),
-                prev_bcnt_for_commit: Some(bcnt_1.to_string()),
+                prev_endtime_for_commit: Some(endtime_1),
             },
         );
 
         let state = assert_ok!(monitor.get_latest_state().await);
         assert_matches!(state, PackageBuildState::PendingStatusPosted);
 
-        // Make sure a different srcmd5 with a new bcnt isn't picked up.
+        // Make sure a different srcmd5 with a new endtime isn't picked up.
         mock.add_job_history(
             TEST_PROJECT,
             TEST_REPO,
@@ -789,7 +789,7 @@ mod tests {
             MockJobHistoryEntry {
                 package: TEST_PACKAGE_1.to_owned(),
                 srcmd5: srcmd5.clone() + &srcmd5,
-                bcnt: bcnt_2,
+                endtime: SystemTime::UNIX_EPOCH + Duration::from_secs(endtime_2),
                 ..Default::default()
             },
         );
@@ -804,7 +804,7 @@ mod tests {
             MockJobHistoryEntry {
                 package: TEST_PACKAGE_1.to_owned(),
                 srcmd5: srcmd5.clone(),
-                bcnt: bcnt_2,
+                endtime: SystemTime::UNIX_EPOCH + Duration::from_secs(endtime_2),
                 ..Default::default()
             },
         );
@@ -817,7 +817,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fails_after_repeated_bcnt_rejections() {
+    async fn test_fails_after_repeated_duplicate_endtimes() {
         let srcmd5 = random_md5();
 
         let mock = create_default_mock().await;
@@ -856,7 +856,7 @@ mod tests {
                 arch: TEST_ARCH_1.to_owned(),
                 rev: "1".to_owned(),
                 srcmd5: srcmd5.clone(),
-                prev_bcnt_for_commit: None,
+                prev_endtime_for_commit: None,
             },
         );
 

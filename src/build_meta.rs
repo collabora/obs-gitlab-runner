@@ -15,7 +15,7 @@ pub struct RepoArch {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct CommitBuildInfo {
-    pub prev_bcnt_for_commit: Option<String>,
+    pub prev_endtime_for_commit: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -152,17 +152,17 @@ impl BuildMeta {
         let mut repos = HashMap::new();
 
         for (repo, jobhist) in &self.enabled_repos {
-            let prev_bcnt_for_commit = jobhist
+            let prev_endtime_for_commit = jobhist
                 .jobhist
                 .iter()
                 .filter(|e| e.srcmd5 == srcmd5)
                 .last()
-                .map(|e| e.bcnt.clone());
+                .map(|e| e.endtime);
 
             repos.insert(
                 repo.clone(),
                 CommitBuildInfo {
-                    prev_bcnt_for_commit,
+                    prev_endtime_for_commit,
                 },
             );
         }
@@ -173,6 +173,8 @@ impl BuildMeta {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, SystemTime};
+
     use claim::*;
     use open_build_service_mock::*;
 
@@ -184,11 +186,11 @@ mod tests {
     async fn test_build_meta_repos() {
         let rev_1 = "1";
         let srcmd5_1 = random_md5();
-        let bcnt_1 = 2;
+        let endtime_1 = 100;
 
         let rev_2 = "2";
         let srcmd5_2 = random_md5();
-        let bcnt_2 = 5;
+        let endtime_2 = 200;
 
         let repo_arch_1 = RepoArch {
             repo: TEST_REPO.to_owned(),
@@ -229,7 +231,7 @@ mod tests {
                 package: TEST_PACKAGE_1.to_owned(),
                 rev: rev_1.to_owned(),
                 srcmd5: srcmd5_1.clone(),
-                bcnt: bcnt_1,
+                endtime: SystemTime::UNIX_EPOCH + Duration::from_secs(endtime_1),
                 ..Default::default()
             },
         );
@@ -242,7 +244,7 @@ mod tests {
                 package: TEST_PACKAGE_1.to_owned(),
                 rev: rev_2.to_owned(),
                 srcmd5: srcmd5_2.clone(),
-                bcnt: bcnt_2,
+                endtime: SystemTime::UNIX_EPOCH + Duration::from_secs(endtime_2),
                 ..Default::default()
             },
         );
@@ -265,10 +267,10 @@ mod tests {
         let build_info = meta.get_commit_build_info(&srcmd5_1);
 
         let arch_1 = assert_some!(build_info.get(&repo_arch_1));
-        assert_some_eq!(arch_1.prev_bcnt_for_commit.as_deref(), &bcnt_1.to_string());
+        assert_some_eq!(arch_1.prev_endtime_for_commit, endtime_1);
 
         let arch_2 = assert_some!(build_info.get(&repo_arch_2));
-        assert_none!(arch_2.prev_bcnt_for_commit.as_deref());
+        assert_none!(arch_2.prev_endtime_for_commit);
 
         let meta = assert_ok!(
             BuildMeta::get(
@@ -285,9 +287,9 @@ mod tests {
         let build_info = meta.get_commit_build_info(&srcmd5_1);
 
         let arch_1 = assert_some!(build_info.get(&repo_arch_1));
-        assert_none!(arch_1.prev_bcnt_for_commit.as_deref());
+        assert_none!(arch_1.prev_endtime_for_commit);
         let arch_2 = assert_some!(build_info.get(&repo_arch_2));
-        assert_none!(arch_2.prev_bcnt_for_commit.as_deref());
+        assert_none!(arch_2.prev_endtime_for_commit);
 
         assert!(meta.enabled_repos.contains_key(&repo_arch_2));
 
@@ -311,7 +313,7 @@ mod tests {
                 package: TEST_PACKAGE_1.to_owned(),
                 rev: rev_1.to_owned(),
                 srcmd5: srcmd5_1.clone(),
-                bcnt: bcnt_2,
+                endtime: SystemTime::UNIX_EPOCH + Duration::from_secs(endtime_2),
                 ..Default::default()
             },
         );
@@ -330,7 +332,7 @@ mod tests {
         let build_info = meta.get_commit_build_info(&srcmd5_2);
 
         let arch_1 = assert_some!(build_info.get(&repo_arch_2));
-        assert_some_eq!(arch_1.prev_bcnt_for_commit.as_deref(), &bcnt_2.to_string());
+        assert_some_eq!(arch_1.prev_endtime_for_commit, endtime_2);
 
         mock.set_package_metadata(
             TEST_PROJECT,
@@ -352,7 +354,7 @@ mod tests {
                 package: TEST_PACKAGE_1.to_owned(),
                 rev: rev_1.to_owned(),
                 srcmd5: srcmd5_1.clone(),
-                bcnt: bcnt_1,
+                endtime: SystemTime::UNIX_EPOCH + Duration::from_secs(endtime_1),
                 ..Default::default()
             },
         );
@@ -371,13 +373,13 @@ mod tests {
         let build_info = meta.get_commit_build_info(&srcmd5_1);
 
         let arch_2 = assert_some!(build_info.get(&repo_arch_2));
-        assert_some_eq!(arch_2.prev_bcnt_for_commit.as_deref(), &bcnt_1.to_string());
+        assert_some_eq!(arch_2.prev_endtime_for_commit, endtime_1);
 
         meta.clear_stored_history();
 
         let build_info = meta.get_commit_build_info(&srcmd5_1);
         let arch_2 = assert_some!(build_info.get(&repo_arch_2));
-        assert_none!(arch_2.prev_bcnt_for_commit.as_deref());
+        assert_none!(arch_2.prev_endtime_for_commit);
 
         mock.set_package_metadata(
             TEST_PROJECT,

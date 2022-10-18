@@ -39,7 +39,7 @@ struct JobSpec {
     rules: serde_yaml::Sequence,
 }
 
-fn generate_command(command_name: String, args: &[(&str, &str)]) -> String {
+fn generate_command(command_name: String, args: &[(&str, String)]) -> String {
     let mut command = vec![command_name];
 
     for (arg, value) in args {
@@ -72,19 +72,19 @@ pub fn generate_monitor_pipeline(
         let mut artifact_paths = vec![];
 
         let common_args = vec![
-            ("project", project),
-            ("package", package),
-            ("repository", repo),
-            ("arch", arch),
+            ("project", project.to_owned()),
+            ("package", package.to_owned()),
+            ("repository", repo.to_owned()),
+            ("arch", arch.to_owned()),
         ];
 
         let mut monitor_args = vec![
-            ("rev", rev),
-            ("srcmd5", srcmd5),
-            ("build-log-out", &options.build_log_out),
+            ("rev", rev.to_owned()),
+            ("srcmd5", srcmd5.to_owned()),
+            ("build-log-out", options.build_log_out.clone()),
         ];
-        if let Some(bcnt) = &info.prev_bcnt_for_commit {
-            monitor_args.push(("prev-bcnt-for-commit", bcnt.as_str()));
+        if let Some(endtime) = &info.prev_endtime_for_commit {
+            monitor_args.push(("prev-endtime-for-commit", endtime.to_string()));
         }
         monitor_args.extend_from_slice(&common_args);
         script.push(generate_command("monitor".to_owned(), &monitor_args));
@@ -93,8 +93,7 @@ pub fn generate_monitor_pipeline(
         if let PipelineDownloadBinaries::OnSuccess { build_results_dir } =
             &options.download_binaries
         {
-            let mut download_args: Vec<(_, &str)> =
-                vec![("build-results-dir", build_results_dir.as_str())];
+            let mut download_args = vec![("build-results-dir", build_results_dir.clone())];
             download_args.extend_from_slice(&common_args);
             script.push(generate_command(
                 "download-binaries".to_owned(),

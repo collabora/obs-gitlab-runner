@@ -102,7 +102,7 @@ struct MonitorAction {
     #[clap(long)]
     arch: String,
     #[clap(long)]
-    prev_bcnt_for_commit: Option<String>,
+    prev_endtime_for_commit: Option<u64>,
     #[clap(long)]
     build_log_out: String,
 }
@@ -318,8 +318,9 @@ impl ObsJobHandler {
         let result = uploader.upload_package(self).await?;
 
         // If we couldn't get the metadata before because the package didn't
-        // exist yet, get it now but without history, so we leave the previous bcnt empty (if there
-        // was no previous package, there were no previous builds).
+        // exist yet, get it now but without history, so we leave the previous
+        // endtime empty (if there was no previous package, there were no
+        // previous builds).
         let mut build_meta = if let Some(build_meta) = initial_build_meta {
             build_meta
         } else {
@@ -346,7 +347,7 @@ impl ObsJobHandler {
                 .await
                 .wrap_err("Failed to trigger rebuild")?;
             } else {
-                // Clear out the history used to track "bcnt" values. This is
+                // Clear out the history used to track endtime values. This is
                 // normally important to make sure the monitor doesn't
                 // accidentally pick up an old build result...but if we didn't
                 // rebuild anything, picking up the old result is *exactly* the
@@ -423,7 +424,7 @@ impl ObsJobHandler {
                 arch: args.arch.clone(),
                 rev: args.rev.clone(),
                 srcmd5: args.srcmd5.clone(),
-                prev_bcnt_for_commit: args.prev_bcnt_for_commit,
+                prev_endtime_for_commit: args.prev_endtime_for_commit,
             },
         );
 
@@ -1056,8 +1057,8 @@ mod tests {
                 TEST_ARCH_1.to_owned(),
                 MockRepositoryCode::Building,
             );
-            // Also test bcnts, since we now have an existing package to modify
-            // the metadata of.
+            // Also test endtimes, since we now have an existing package to
+            // modify the metadata of.
             let dir = assert_ok!(
                 context
                     .obs_client
@@ -1193,9 +1194,9 @@ mod tests {
             .unwrap();
 
         if test == DputTest::Rebuild {
-            assert_some!(arch_1.prev_bcnt_for_commit.as_deref());
+            assert_some!(arch_1.prev_endtime_for_commit);
         } else {
-            assert_none!(arch_1.prev_bcnt_for_commit.as_deref());
+            assert_none!(arch_1.prev_endtime_for_commit);
 
             let arch_2 = build_info
                 .enabled_repos
@@ -1204,7 +1205,7 @@ mod tests {
                     arch: TEST_ARCH_2.to_owned(),
                 })
                 .unwrap();
-            assert_none!(arch_2.prev_bcnt_for_commit.as_deref());
+            assert_none!(arch_2.prev_endtime_for_commit);
         }
 
         let mut dir = assert_ok!(
@@ -1457,8 +1458,8 @@ mod tests {
             );
 
             if dput_test != DputTest::ReusePreviousBuild {
-                // Update the bcnt in the background, otherwise the monitor will
-                // hang forever waiting.
+                // Update the endtime in the background, otherwise the monitor
+                // will hang forever waiting.
                 let mock = context.obs_mock.clone();
                 let build_info_2 = build_info.clone();
                 let repo_2 = repo.clone();
@@ -1470,7 +1471,7 @@ mod tests {
                         &repo_2.arch,
                         MockJobHistoryEntry {
                             package: build_info_2.package,
-                            bcnt: 999,
+                            endtime: SystemTime::UNIX_EPOCH + Duration::from_secs(999),
                             srcmd5: build_info_2.srcmd5.unwrap(),
                             ..Default::default()
                         },

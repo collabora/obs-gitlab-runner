@@ -140,7 +140,7 @@ async fn main() {
             |job| async {
                 ObsJobHandler::from_obs_config_in_job(job, HandlerOptions::default()).map_err(
                     |err| {
-                        error!("Failed to create new client: {:?}", err);
+                        error!(gitlab.output = true, "Failed to handle new job: {:?}", err);
                     },
                 )
             },

@@ -36,7 +36,8 @@ struct JobSpec {
     script: Vec<String>,
     after_script: Vec<String>,
     artifacts: ArtifactsSpec,
-    rules: serde_yaml::Sequence,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rules: Option<serde_yaml::Sequence>,
 }
 
 fn generate_command(command_name: String, args: &[(&str, String)]) -> String {
@@ -58,13 +59,12 @@ pub fn generate_monitor_pipeline(
     enabled_repos: &HashMap<RepoArch, CommitBuildInfo>,
     options: GeneratePipelineOptions,
 ) -> Result<File> {
-    let rules: serde_yaml::Sequence = options
+    let rules: Option<serde_yaml::Sequence> = options
         .rules
         .as_deref()
         .map(serde_yaml::from_str)
         .transpose()
-        .wrap_err("Failed to parse provided rules")?
-        .unwrap_or_default();
+        .wrap_err("Failed to parse provided rules")?;
 
     let mut jobs = HashMap::new();
     for (RepoArch { repo, arch }, info) in enabled_repos {

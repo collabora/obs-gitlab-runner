@@ -1,4 +1,4 @@
-FROM rust:1.59.0-slim-bullseye AS build
+FROM rust:1.64.0-slim-bullseye AS build
 ARG DEBIAN_FRONTEND=noninteractive
 
 ADD . /app

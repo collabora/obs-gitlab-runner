@@ -2,14 +2,14 @@ use std::{fmt, str::FromStr};
 
 use clap::Parser;
 use color_eyre::{config::HookBuilder, eyre::Result};
-use gitlab_runner::Runner;
+use gitlab_runner::{outputln, Runner};
 use strum::{Display, EnumString};
-use tracing::{error, info};
+use tracing::info;
 use tracing_subscriber::{filter::targets::Targets, prelude::*, util::SubscriberInitExt, Layer};
 use url::Url;
 
 use crate::{
-    errors::install_json_report_hook,
+    errors::{install_json_report_hook, log_report},
     handler::{HandlerOptions, ObsJobHandler},
 };
 
@@ -132,12 +132,14 @@ async fn main() {
     }
 
     info!("Starting runner...");
+
     runner
         .run(
             |job| async {
                 ObsJobHandler::from_obs_config_in_job(job, HandlerOptions::default()).map_err(
                     |err| {
-                        error!("Failed to create new client: {:?}", err);
+                        outputln!("Failed to set up job handler: {:?}", err);
+                        log_report(err);
                     },
                 )
             },

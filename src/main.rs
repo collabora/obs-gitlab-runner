@@ -4,15 +4,8 @@ use clap::Parser;
 use color_eyre::eyre::Result;
 use gitlab_runner::Runner;
 use strum::{Display, EnumString};
-use tracing::{error, info, Subscriber};
-use tracing_subscriber::{
-    filter::targets::Targets,
-    fmt::{format::DefaultFields, FormatEvent},
-    prelude::*,
-    registry::LookupSpan,
-    util::SubscriberInitExt,
-    Layer,
-};
+use tracing::{error, info};
+use tracing_subscriber::{filter::targets::Targets, prelude::*, util::SubscriberInitExt, Layer};
 use url::Url;
 
 use crate::handler::{HandlerOptions, ObsJobHandler};
@@ -90,16 +83,6 @@ struct Args {
     max_jobs: usize,
 }
 
-fn formatter_layer<E, S>(format: E, targets: Targets) -> impl Layer<S>
-where
-    S: Subscriber + for<'a> LookupSpan<'a>,
-    E: FormatEvent<S, DefaultFields> + 'static,
-{
-    tracing_subscriber::fmt::layer()
-        .event_format(format)
-        .with_filter(targets)
-}
-
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -113,22 +96,25 @@ async fn main() {
 
     match args.log_format {
         LogFormat::Compact => registry
-            .with(formatter_layer(
-                tracing_subscriber::fmt::format().compact(),
-                args.log.targets,
-            ))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .compact()
+                    .with_filter(args.log.targets),
+            )
             .init(),
         LogFormat::Json => registry
-            .with(formatter_layer(
-                tracing_subscriber::fmt::format().json(),
-                args.log.targets,
-            ))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .with_filter(args.log.targets),
+            )
             .init(),
         LogFormat::Pretty => registry
-            .with(formatter_layer(
-                tracing_subscriber::fmt::format().pretty(),
-                args.log.targets,
-            ))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .pretty()
+                    .with_filter(args.log.targets),
+            )
             .init(),
     }
 

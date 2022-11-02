@@ -1,26 +1,23 @@
 use std::{fmt, str::FromStr};
 
 use clap::Parser;
-use color_eyre::eyre::Result;
-use gitlab_runner::Runner;
+use color_eyre::{config::HookBuilder, eyre::Result};
+use gitlab_runner::{outputln, Runner};
 use strum::{Display, EnumString};
-use tracing::{error, info, Subscriber};
-use tracing_subscriber::{
-    filter::targets::Targets,
-    fmt::{format::DefaultFields, FormatEvent},
-    prelude::*,
-    registry::LookupSpan,
-    util::SubscriberInitExt,
-    Layer,
-};
+use tracing::info;
+use tracing_subscriber::{filter::targets::Targets, prelude::*, util::SubscriberInitExt, Layer};
 use url::Url;
 
-use crate::handler::{HandlerOptions, ObsJobHandler};
+use crate::{
+    errors::{install_json_report_hook, log_report},
+    handler::{HandlerOptions, ObsJobHandler},
+};
 
 mod artifacts;
 mod binaries;
 mod build_meta;
 mod dsc;
+mod errors;
 mod handler;
 mod monitor;
 mod pipeline;
@@ -59,7 +56,7 @@ impl fmt::Display for TargetsArg {
     }
 }
 
-#[derive(Display, EnumString)]
+#[derive(Display, EnumString, PartialEq, Eq)]
 #[strum(serialize_all = "lowercase")]
 enum LogFormat {
     Pretty,
@@ -90,16 +87,6 @@ struct Args {
     max_jobs: usize,
 }
 
-fn formatter_layer<E, S>(format: E, targets: Targets) -> impl Layer<S>
-where
-    S: Subscriber + for<'a> LookupSpan<'a>,
-    E: FormatEvent<S, DefaultFields> + 'static,
-{
-    tracing_subscriber::fmt::layer()
-        .event_format(format)
-        .with_filter(targets)
-}
-
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -113,34 +100,46 @@ async fn main() {
 
     match args.log_format {
         LogFormat::Compact => registry
-            .with(formatter_layer(
-                tracing_subscriber::fmt::format().compact(),
-                args.log.targets,
-            ))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .compact()
+                    .with_filter(args.log.targets),
+            )
             .init(),
         LogFormat::Json => registry
-            .with(formatter_layer(
-                tracing_subscriber::fmt::format().json(),
-                args.log.targets,
-            ))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .with_filter(args.log.targets),
+            )
             .init(),
         LogFormat::Pretty => registry
-            .with(formatter_layer(
-                tracing_subscriber::fmt::format().pretty(),
-                args.log.targets,
-            ))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .pretty()
+                    .with_filter(args.log.targets),
+            )
             .init(),
     }
 
-    color_eyre::install().unwrap();
+    let (panic_hook, eyre_hook) = HookBuilder::default().into_hooks();
+    panic_hook.install();
+
+    if args.log_format == LogFormat::Json {
+        install_json_report_hook(eyre_hook).unwrap();
+    } else {
+        eyre_hook.install().unwrap();
+    }
 
     info!("Starting runner...");
+
     runner
         .run(
             |job| async {
                 ObsJobHandler::from_obs_config_in_job(job, HandlerOptions::default()).map_err(
                     |err| {
-                        error!("Failed to create new client: {:?}", err);
+                        outputln!("Failed to set up job handler: {:?}", err);
+                        log_report(err);
                     },
                 )
             },

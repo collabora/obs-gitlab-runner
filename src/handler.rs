@@ -21,12 +21,13 @@ use open_build_service_api as obs;
 use serde::{Deserialize, Serialize};
 use tokio::{fs::File as AsyncFile, io::AsyncSeekExt};
 use tokio_util::{compat::FuturesAsyncWriteCompatExt, io::ReaderStream};
-use tracing::{debug, error, instrument};
+use tracing::{debug, instrument};
 
 use crate::{
     artifacts::{save_to_tempfile, ArtifactDirectory},
     binaries::download_binaries,
     build_meta::{BuildHistoryRetrieval, BuildMeta, CommitBuildInfo, RepoArch},
+    errors::log_report,
     monitor::{MonitoredPackage, ObsMonitor, PackageCompletion, PackageMonitoringOptions},
     pipeline::{generate_monitor_pipeline, GeneratePipelineOptions, PipelineDownloadBinaries},
     prune::prune_branch,
@@ -451,7 +452,7 @@ impl ObsJobHandler {
                 outputln!("Build was superceded by a newer revision.");
             }
             PackageCompletion::Disabled => {
-                outputln!("Package is disabled for this architecture.");
+                outputln!("Build is disabled for this architecture.");
             }
             PackageCompletion::Failed(reason) => {
                 log_file
@@ -603,15 +604,17 @@ async fn upload_artifact(
 
 #[async_trait]
 impl JobHandler for ObsJobHandler {
+    #[tracing::instrument(skip(self))]
     async fn step(&mut self, script: &[String], _phase: Phase) -> JobResult {
         for command in script {
             if let Err(err) = self.command(command).await {
                 // Failed builds would already have information on them printed
                 // above, so don't print anything on them again.
                 if !err.is::<FailedBuild>() {
-                    error!(gitlab.output = true, "Error running command: {:?}", err);
+                    outputln!("Error running command: {:?}", err);
                 }
 
+                log_report(err);
                 self.script_failed = true;
                 return Err(());
             }
@@ -620,12 +623,14 @@ impl JobHandler for ObsJobHandler {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, uploader))]
     async fn upload_artifacts(&mut self, uploader: &mut Uploader) -> JobResult {
         let mut success = true;
 
         for (name, file) in &mut self.artifacts {
             if let Err(err) = upload_artifact(name.clone(), file, uploader).await {
-                error!(gitlab.output = true, "Failed to upload {}: {:?}", name, err);
+                outputln!("Failed to upload {}: {:?}", name, err);
+                log_report(err);
                 success = false;
             }
         }
@@ -1504,7 +1509,7 @@ mod tests {
             // so don't check for an old build status.
             let build_actually_occurred = dput_test != DputTest::ReusePreviousBuild;
             assert_eq!(
-                job_log.contains("Waiting for build status"),
+                job_log.contains("waiting for updates"),
                 build_actually_occurred
             );
 

@@ -214,11 +214,11 @@ impl ObsMonitor {
             match state {
                 PackageBuildState::Building(code) => {
                     if previous_code != Some(code) {
-                        if previous_code.is_some() {
-                            outputln!("Build status is now '{}'...", code);
-                        } else {
-                            outputln!("Monitoring build, current status is '{}'...", code);
+                        if previous_code.is_none() {
+                            outputln!("Monitoring build...");
                         }
+
+                        outputln!("Build status is '{}'.", code);
                         previous_code = Some(code);
                     }
 
@@ -226,7 +226,10 @@ impl ObsMonitor {
                 }
                 PackageBuildState::Dirty => {
                     if !was_dirty {
-                        outputln!("Package is dirty, trying again later...");
+                        outputln!(
+                            "Package build is dirty / being re-scheduled, \
+                            waiting for updates..."
+                        );
                     }
 
                     was_dirty = true;
@@ -235,11 +238,14 @@ impl ObsMonitor {
                 PackageBuildState::PendingStatusPosted => {
                     ensure!(
                         old_status_retries < options.max_old_status_retries,
-                        "Old build status has been posted for too long."
+                        "Outdated package build status has been posted for too long."
                     );
 
                     if old_status_retries == 0 {
-                        outputln!("Waiting for build status to be available...");
+                        outputln!(
+                            "Package has the build status of a previous build, \
+                            waiting for updates..."
+                        );
                     }
                     old_status_retries += 1;
 
@@ -870,6 +876,10 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(5), monitor.monitor_package(options)).await
         );
         let err = assert_err!(result);
-        assert!(err.to_string().contains("Old build status"), "{:?}", err);
+        assert!(
+            err.to_string().contains("Outdated package build status"),
+            "{:?}",
+            err
+        );
     }
 }

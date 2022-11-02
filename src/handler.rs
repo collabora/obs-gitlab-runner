@@ -452,7 +452,7 @@ impl ObsJobHandler {
                 outputln!("Build was superceded by a newer revision.");
             }
             PackageCompletion::Disabled => {
-                outputln!("Package is disabled for this architecture.");
+                outputln!("Build is disabled for this architecture.");
             }
             PackageCompletion::Failed(reason) => {
                 log_file
@@ -1509,7 +1509,7 @@ mod tests {
             // so don't check for an old build status.
             let build_actually_occurred = dput_test != DputTest::ReusePreviousBuild;
             assert_eq!(
-                job_log.contains("Waiting for build status"),
+                job_log.contains("waiting for updates"),
                 build_actually_occurred
             );
 

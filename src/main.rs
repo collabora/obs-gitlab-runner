@@ -1,19 +1,23 @@
 use std::{fmt, str::FromStr};
 
 use clap::Parser;
-use color_eyre::eyre::Result;
+use color_eyre::{config::HookBuilder, eyre::Result};
 use gitlab_runner::Runner;
 use strum::{Display, EnumString};
 use tracing::{error, info};
 use tracing_subscriber::{filter::targets::Targets, prelude::*, util::SubscriberInitExt, Layer};
 use url::Url;
 
-use crate::handler::{HandlerOptions, ObsJobHandler};
+use crate::{
+    errors::install_json_report_hook,
+    handler::{HandlerOptions, ObsJobHandler},
+};
 
 mod artifacts;
 mod binaries;
 mod build_meta;
 mod dsc;
+mod errors;
 mod handler;
 mod monitor;
 mod pipeline;
@@ -52,7 +56,7 @@ impl fmt::Display for TargetsArg {
     }
 }
 
-#[derive(Display, EnumString)]
+#[derive(Display, EnumString, PartialEq, Eq)]
 #[strum(serialize_all = "lowercase")]
 enum LogFormat {
     Pretty,
@@ -118,7 +122,14 @@ async fn main() {
             .init(),
     }
 
-    color_eyre::install().unwrap();
+    let (panic_hook, eyre_hook) = HookBuilder::default().into_hooks();
+    panic_hook.install();
+
+    if args.log_format == LogFormat::Json {
+        install_json_report_hook(eyre_hook).unwrap();
+    } else {
+        eyre_hook.install().unwrap();
+    }
 
     info!("Starting runner...");
     runner

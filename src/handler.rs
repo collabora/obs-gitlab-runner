@@ -26,7 +26,7 @@ use tracing::{debug, error, instrument};
 use crate::{
     artifacts::{save_to_tempfile, ArtifactDirectory},
     binaries::download_binaries,
-    build_meta::{BuildHistoryRetrieval, BuildMeta, CommitBuildInfo, RepoArch},
+    build_meta::{BuildHistoryRetrieval, BuildMeta, BuildMetaOptions, CommitBuildInfo, RepoArch},
     monitor::{MonitoredPackage, ObsMonitor, PackageCompletion, PackageMonitoringOptions},
     pipeline::{generate_monitor_pipeline, GeneratePipelineOptions, PipelineDownloadBinaries},
     prune::prune_branch,
@@ -310,7 +310,10 @@ impl ObsJobHandler {
             &self.client,
             &build_info.project,
             &build_info.package,
-            BuildHistoryRetrieval::Full,
+            &BuildMetaOptions {
+                history_retrieval: BuildHistoryRetrieval::Full,
+                wait_options: Default::default(),
+            },
         )
         .await?;
         debug!(?initial_build_meta);
@@ -328,7 +331,10 @@ impl ObsJobHandler {
                 &self.client,
                 &build_info.project,
                 &build_info.package,
-                BuildHistoryRetrieval::None,
+                &BuildMetaOptions {
+                    history_retrieval: BuildHistoryRetrieval::None,
+                    wait_options: Default::default(),
+                },
             )
             .await?
         };

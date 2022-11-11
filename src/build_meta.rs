@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use color_eyre::eyre::{Result, WrapErr};
+use gitlab_runner::outputln;
 use open_build_service_api as obs;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info_span, instrument, Instrument};
@@ -29,15 +30,92 @@ pub enum BuildHistoryRetrieval {
     None,
 }
 
+#[derive(Debug)]
+pub struct BuildMetaWaitOptions {
+    pub sleep_on_empty: Duration,
+}
+
+impl Default for BuildMetaWaitOptions {
+    fn default() -> Self {
+        Self {
+            sleep_on_empty: Duration::from_secs(15),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct BuildMetaOptions {
+    pub history_retrieval: BuildHistoryRetrieval,
+    pub wait_options: BuildMetaWaitOptions,
+}
+
+#[instrument(skip(client))]
+async fn get_status(
+    client: &obs::Client,
+    project: &str,
+    package: &str,
+    repo: &str,
+    arch: &str,
+) -> Result<obs::BuildStatus> {
+    let status = retry_request(|| async {
+        client
+            .project(project.to_owned())
+            .package(package.to_owned())
+            .status(repo, arch)
+            .await
+    })
+    .await
+    .wrap_err_with(|| {
+        format!(
+            "Failed to get status of {}/{}/{}/{}",
+            project, repo, arch, package
+        )
+    })?;
+    debug!(?status);
+
+    Ok(status)
+}
+
+fn is_status_empty(status: &obs::BuildStatus) -> bool {
+    status.code == obs::PackageCode::Broken && matches!(status.details.as_deref(), Some("empty"))
+}
+
+#[instrument(skip(client))]
+async fn get_status_if_not_broken(
+    client: &obs::Client,
+    project: &str,
+    package: &str,
+    repo: &str,
+    arch: &str,
+    options: &BuildMetaWaitOptions,
+) -> Result<obs::BuildStatus> {
+    let mut status = get_status(client, project, package, repo, arch).await?;
+
+    if is_status_empty(&status) {
+        outputln!("Waiting for package contents to appear...");
+        for attempt in 0.. {
+            debug!(?attempt);
+            tokio::time::sleep(options.sleep_on_empty).await;
+
+            status = get_status(client, project, package, repo, arch).await?;
+            if !is_status_empty(&status) {
+                break;
+            }
+        }
+    }
+
+    Ok(status)
+}
+
 impl BuildMeta {
     #[instrument(skip(client))]
     pub async fn get_if_package_exists(
         client: &obs::Client,
         project: &str,
         package: &str,
-        history_retrieval: BuildHistoryRetrieval,
+        options: &BuildMetaOptions,
     ) -> Result<Option<BuildMeta>> {
-        match Self::get(client, project, package, history_retrieval).await {
+        match Self::get(client, project, package, options).await {
             Ok(result) => Ok(Some(result)),
             Err(e) => {
                 for cause in e.chain() {
@@ -60,7 +138,7 @@ impl BuildMeta {
         client: &obs::Client,
         project: &str,
         package: &str,
-        history_retrieval: BuildHistoryRetrieval,
+        options: &BuildMetaOptions,
     ) -> Result<BuildMeta> {
         let project_meta =
             retry_request(|| async { client.project(project.to_owned()).meta().await })
@@ -73,22 +151,15 @@ impl BuildMeta {
 
         for repo_meta in project_meta.repositories {
             for arch in repo_meta.arches {
-                let status = retry_request(|| async {
-                    client
-                        .project(project.to_owned())
-                        .package(package.to_owned())
-                        .status(&repo_meta.name, &arch)
-                        .await
-                })
-                .await
-                .wrap_err_with(|| {
-                    format!(
-                        "Failed to get status of {}/{}/{}/{}",
-                        project, repo_meta.name, arch, package
-                    )
-                })?;
-                debug!(?status);
-
+                let status = get_status_if_not_broken(
+                    client,
+                    project,
+                    package,
+                    &repo_meta.name,
+                    &arch,
+                    &options.wait_options,
+                )
+                .await?;
                 if matches!(
                     status.code,
                     obs::PackageCode::Disabled | obs::PackageCode::Excluded
@@ -97,7 +168,7 @@ impl BuildMeta {
                     continue;
                 }
 
-                let jobhist = match history_retrieval {
+                let jobhist = match options.history_retrieval {
                     BuildHistoryRetrieval::Full => {
                         retry_request(|| async {
                             client
@@ -244,7 +315,10 @@ mod tests {
                 &client,
                 TEST_PROJECT,
                 TEST_PACKAGE_1,
-                BuildHistoryRetrieval::Full
+                &BuildMetaOptions {
+                    history_retrieval: BuildHistoryRetrieval::Full,
+                    wait_options: Default::default(),
+                }
             )
             .await
         );
@@ -265,7 +339,10 @@ mod tests {
                 &client,
                 TEST_PROJECT,
                 TEST_PACKAGE_1,
-                BuildHistoryRetrieval::None
+                &BuildMetaOptions {
+                    history_retrieval: BuildHistoryRetrieval::None,
+                    wait_options: Default::default(),
+                }
             )
             .await
         );
@@ -307,7 +384,10 @@ mod tests {
                 &client,
                 TEST_PROJECT,
                 TEST_PACKAGE_1,
-                BuildHistoryRetrieval::Full
+                &BuildMetaOptions {
+                    history_retrieval: BuildHistoryRetrieval::Full,
+                    wait_options: Default::default(),
+                }
             )
             .await
         );
@@ -336,7 +416,10 @@ mod tests {
                 &client,
                 TEST_PROJECT,
                 TEST_PACKAGE_1,
-                BuildHistoryRetrieval::Full
+                &BuildMetaOptions {
+                    history_retrieval: BuildHistoryRetrieval::Full,
+                    wait_options: Default::default(),
+                }
             )
             .await
         );
@@ -366,7 +449,99 @@ mod tests {
                 &client,
                 TEST_PROJECT,
                 TEST_PACKAGE_1,
-                BuildHistoryRetrieval::Full
+                &BuildMetaOptions {
+                    history_retrieval: BuildHistoryRetrieval::Full,
+                    wait_options: Default::default()
+                }
+            )
+            .await
+        );
+        assert_eq!(meta.enabled_repos.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_build_meta_ignores_empty() {
+        const EMPTY_SLEEP_DURATION: Duration = Duration::from_millis(100);
+
+        let repo_arch_1 = RepoArch {
+            repo: TEST_REPO.to_owned(),
+            arch: TEST_ARCH_1.to_owned(),
+        };
+
+        let mock = create_default_mock().await;
+        mock.add_project(TEST_PROJECT.to_owned());
+        mock.add_new_package(
+            TEST_PROJECT,
+            TEST_PACKAGE_1.to_owned(),
+            MockPackageOptions::default(),
+        );
+
+        mock.add_or_update_repository(
+            TEST_PROJECT,
+            TEST_REPO.to_owned(),
+            TEST_ARCH_1.to_owned(),
+            MockRepositoryCode::Finished,
+        );
+
+        mock.set_package_build_status(
+            TEST_PROJECT,
+            TEST_REPO,
+            TEST_ARCH_1,
+            TEST_PACKAGE_1.to_owned(),
+            MockBuildStatus::new(MockPackageCode::Broken),
+        );
+
+        let client = create_default_client(&mock);
+
+        let meta = assert_ok!(
+            BuildMeta::get(
+                &client,
+                TEST_PROJECT,
+                TEST_PACKAGE_1,
+                &BuildMetaOptions {
+                    history_retrieval: BuildHistoryRetrieval::Full,
+                    wait_options: Default::default(),
+                }
+            )
+            .await
+        );
+        assert_eq!(meta.enabled_repos.len(), 1);
+        assert!(meta.enabled_repos.contains_key(&repo_arch_1));
+
+        mock.set_package_build_status(
+            TEST_PROJECT,
+            TEST_REPO,
+            TEST_ARCH_1,
+            TEST_PACKAGE_1.to_owned(),
+            MockBuildStatus {
+                code: MockPackageCode::Broken,
+                details: "empty".to_owned(),
+                ..Default::default()
+            },
+        );
+
+        tokio::spawn(async move {
+            tokio::time::sleep(EMPTY_SLEEP_DURATION * 10).await;
+            mock.set_package_build_status(
+                TEST_PROJECT,
+                TEST_REPO,
+                TEST_ARCH_1,
+                TEST_PACKAGE_1.to_owned(),
+                MockBuildStatus::new(MockPackageCode::Excluded),
+            );
+        });
+
+        let meta = assert_ok!(
+            BuildMeta::get(
+                &client,
+                TEST_PROJECT,
+                TEST_PACKAGE_1,
+                &BuildMetaOptions {
+                    history_retrieval: BuildHistoryRetrieval::Full,
+                    wait_options: BuildMetaWaitOptions {
+                        sleep_on_empty: EMPTY_SLEEP_DURATION,
+                    },
+                }
             )
             .await
         );

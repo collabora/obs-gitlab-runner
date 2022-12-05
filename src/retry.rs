@@ -6,7 +6,7 @@ use futures_util::Future;
 use color_eyre::{eyre::Result, Report};
 use open_build_service_api as obs;
 use tokio::sync::Mutex;
-use tracing::instrument;
+use tracing::{error, instrument};
 
 fn is_client_error(err: &(dyn std::error::Error + 'static)) -> bool {
     err.downcast_ref::<reqwest::Error>()
@@ -48,6 +48,7 @@ where
                 let mut func = func.lock().await;
                 func().await.map_err(|err| {
                     let report = err.into();
+                    error!(?report);
                     if is_caused_by_client_error(&report) {
                         backoff::Error::permanent(report)
                     } else {

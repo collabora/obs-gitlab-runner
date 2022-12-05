@@ -8,6 +8,7 @@ use futures_util::{FutureExt, Stream, TryStreamExt};
 use gitlab_runner::outputln;
 use md5::{Digest, Md5};
 use open_build_service_api as obs;
+use tokio::io::AsyncSeekExt;
 use tracing::{debug, info_span, instrument, trace, Instrument};
 
 use crate::{
@@ -236,7 +237,8 @@ impl ObsDscUploader {
 
         retry_large_request(|| {
             file.try_clone().then(|file| async {
-                let file = file.wrap_err("Failed to clone file")?;
+                let mut file = file.wrap_err("Failed to clone file")?;
+                file.rewind().await.wrap_err("Failed to rewind file")?;
                 self.client
                     .project(self.project.clone())
                     .package(self.package.clone())

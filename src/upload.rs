@@ -8,7 +8,7 @@ use futures_util::{FutureExt, Stream, TryStreamExt};
 use gitlab_runner::outputln;
 use md5::{Digest, Md5};
 use open_build_service_api as obs;
-use tokio::io::AsyncSeekExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tracing::{debug, info_span, instrument, trace, Instrument};
 
 use crate::{
@@ -233,7 +233,13 @@ impl ObsDscUploader {
         artifacts: &impl ArtifactDirectory,
     ) -> Result<()> {
         debug!("Uploading file");
-        let file = artifacts.get_file(root.join(filename).as_str()).await?;
+        let mut file = artifacts.get_file(root.join(filename).as_str()).await?;
+        if filename.ends_with(".dsc") {
+            let mut buf = "".to_owned();
+            file.read_to_string(&mut buf).await.wrap_err("read fail")?;
+            tracing::info!(contents = ?buf);
+            file.rewind().await.wrap_err("rewind fail")?;
+        }
 
         retry_large_request(|| {
             file.try_clone().then(|file| async {

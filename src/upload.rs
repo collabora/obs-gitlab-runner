@@ -234,8 +234,8 @@ impl ObsDscUploader {
     ) -> Result<()> {
         debug!("Uploading file");
         let mut file = artifacts.get_file(root.join(filename).as_str()).await?;
+        let mut buf = "".to_owned();
         if filename.ends_with(".dsc") {
-            let mut buf = "".to_owned();
             file.read_to_string(&mut buf).await.wrap_err("read fail")?;
             tracing::info!(contents = ?buf);
             file.rewind().await.wrap_err("rewind fail")?;
@@ -245,16 +245,33 @@ impl ObsDscUploader {
             file.try_clone().then(|file| async {
                 let mut file = file.wrap_err("Failed to clone file")?;
                 file.rewind().await.wrap_err("Failed to rewind file")?;
-                self.client
-                    .project(self.project.clone())
-                    .package(self.package.clone())
-                    .upload_for_commit(filename, file)
-                    .await
-                    .wrap_err("Failed to upload file")?;
+                if buf.is_empty() {
+                    self.client
+                        .project(self.project.clone())
+                        .package(self.package.clone())
+                        .upload_for_commit(filename, file)
+                        .await
+                        .wrap_err("Failed to upload file")?;
+                } else {
+                    tracing::info!("sending via buf!!!");
+                    self.client
+                        .project(self.project.clone())
+                        .package(self.package.clone())
+                        .upload_for_commit(filename, buf.clone())
+                        .await
+                        .wrap_err("Failed to upload file")?;
+                }
                 Ok::<(), Report>(())
             })
         })
         .await?;
+
+        if filename.ends_with(".dsc") {
+            let mut buf = "".to_owned();
+            file.rewind().await.wrap_err("rewind fail")?;
+            file.read_to_string(&mut buf).await.wrap_err("read fail")?;
+            tracing::info!(contents = ?buf);
+        }
 
         Ok(())
     }

@@ -8,7 +8,7 @@ use futures_util::{FutureExt, Stream, TryStreamExt};
 use gitlab_runner::outputln;
 use md5::{Digest, Md5};
 use open_build_service_api as obs;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::AsyncSeekExt;
 use tracing::{debug, info_span, instrument, trace, Instrument};
 
 use crate::{
@@ -233,45 +233,28 @@ impl ObsDscUploader {
         artifacts: &impl ArtifactDirectory,
     ) -> Result<()> {
         debug!("Uploading file");
-        let mut file = artifacts.get_file(root.join(filename).as_str()).await?;
-        let mut buf = "".to_owned();
-        if filename.ends_with(".dsc") {
-            file.read_to_string(&mut buf).await.wrap_err("read fail")?;
-            tracing::info!(contents = ?buf);
-            file.rewind().await.wrap_err("rewind fail")?;
-        }
+        let file = artifacts.get_file(root.join(filename).as_str()).await?;
+        let size = file
+            .metadata()
+            .await
+            .wrap_err("Failed to get file size")?
+            .len();
 
         retry_large_request(|| {
             file.try_clone().then(|file| async {
                 let mut file = file.wrap_err("Failed to clone file")?;
                 file.rewind().await.wrap_err("Failed to rewind file")?;
-                if buf.is_empty() {
-                    self.client
-                        .project(self.project.clone())
-                        .package(self.package.clone())
-                        .upload_for_commit(filename, file)
-                        .await
-                        .wrap_err("Failed to upload file")?;
-                } else {
-                    tracing::info!("sending via buf!!!");
-                    self.client
-                        .project(self.project.clone())
-                        .package(self.package.clone())
-                        .upload_for_commit(filename, buf.clone())
-                        .await
-                        .wrap_err("Failed to upload file")?;
-                }
+
+                self.client
+                    .project(self.project.clone())
+                    .package(self.package.clone())
+                    .upload_for_commit(filename, file, size)
+                    .await
+                    .wrap_err("Failed to upload file")?;
                 Ok::<(), Report>(())
             })
         })
         .await?;
-
-        if filename.ends_with(".dsc") {
-            let mut buf = "".to_owned();
-            file.rewind().await.wrap_err("rewind fail")?;
-            file.read_to_string(&mut buf).await.wrap_err("read fail")?;
-            tracing::info!(contents = ?buf);
-        }
 
         Ok(())
     }
@@ -748,7 +731,11 @@ mod tests {
 
         assert_ok!(
             package_1
-                .upload_for_commit(already_present_file, already_present_contents.to_vec())
+                .upload_for_commit(
+                    already_present_file,
+                    already_present_contents.to_vec(),
+                    already_present_contents.len() as u64,
+                )
                 .await
         );
 

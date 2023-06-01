@@ -24,7 +24,6 @@ pub enum PackageCompletion {
 #[derive(Debug)]
 enum PackageBuildState {
     PendingStatusPosted,
-    Dirty,
     Building(obs::PackageCode),
     Completed(PackageCompletion),
 }
@@ -49,7 +48,6 @@ pub struct MonitoredPackage {
 #[derive(Clone, Debug)]
 pub struct PackageMonitoringOptions {
     pub sleep_on_building: Duration,
-    pub sleep_on_dirty: Duration,
     pub sleep_on_old_status: Duration,
     pub max_old_status_retries: usize,
 }
@@ -58,7 +56,6 @@ impl Default for PackageMonitoringOptions {
     fn default() -> Self {
         PackageMonitoringOptions {
             sleep_on_building: Duration::from_secs(10),
-            sleep_on_dirty: Duration::from_secs(30),
             sleep_on_old_status: Duration::from_secs(15),
             max_old_status_retries: 40, // 15 seconds * 40 tries = 10 minutes
         }
@@ -118,9 +115,6 @@ impl ObsMonitor {
                     self.package.arch
                 )
             })?;
-        if result.dirty {
-            return Ok(PackageBuildState::Dirty);
-        }
 
         let status = match result.get_status(&self.package.package) {
             Some(status) => status,
@@ -129,9 +123,7 @@ impl ObsMonitor {
             None => return Ok(PackageBuildState::PendingStatusPosted),
         };
 
-        if status.dirty {
-            Ok(PackageBuildState::Dirty)
-        } else if status.code.is_final() {
+        if status.code.is_final() {
             // Similarly to above, there is a small gap after a commit where the
             // previous build status is still posted. To ensure the build that's
             // now final is actually our own, check the build history to make
@@ -206,7 +198,6 @@ impl ObsMonitor {
 
         let mut previous_code = None;
         let mut old_status_retries = 0;
-        let mut was_dirty = false;
 
         loop {
             let state = self.get_latest_state().await?;
@@ -223,14 +214,6 @@ impl ObsMonitor {
                     }
 
                     tokio::time::sleep(options.sleep_on_building).await;
-                }
-                PackageBuildState::Dirty => {
-                    if !was_dirty {
-                        outputln!("Package is dirty, trying again later...");
-                    }
-
-                    was_dirty = true;
-                    tokio::time::sleep(options.sleep_on_dirty).await;
                 }
                 PackageBuildState::PendingStatusPosted => {
                     ensure!(
@@ -254,9 +237,6 @@ impl ObsMonitor {
             // again.
             if !matches!(state, PackageBuildState::PendingStatusPosted) {
                 old_status_retries = 0;
-            }
-            if !matches!(state, PackageBuildState::Dirty) {
-                was_dirty = false;
             }
         }
     }
@@ -545,7 +525,7 @@ mod tests {
         );
 
         let state = assert_ok!(monitor.get_latest_state().await);
-        assert_matches!(state, PackageBuildState::Dirty);
+        assert_matches!(state, PackageBuildState::Building(PackageCode::Unknown));
 
         mock.set_package_build_status(
             TEST_PROJECT,

@@ -26,7 +26,10 @@ use tracing::{debug, error, instrument};
 use crate::{
     artifacts::{save_to_tempfile, ArtifactDirectory},
     binaries::download_binaries,
-    build_meta::{BuildHistoryRetrieval, BuildMeta, BuildMetaOptions, CommitBuildInfo, RepoArch},
+    build_meta::{
+        BuildHistoryRetrieval, BuildMeta, BuildMetaOptions, CommitBuildInfo, DisabledRepos,
+        RepoArch,
+    },
     monitor::{MonitoredPackage, ObsMonitor, PackageCompletion, PackageMonitoringOptions},
     pipeline::{generate_monitor_pipeline, GeneratePipelineOptions, PipelineDownloadBinaries},
     prune::prune_branch,
@@ -307,12 +310,14 @@ impl ObsJobHandler {
         );
 
         let initial_build_meta = BuildMeta::get_if_package_exists(
-            &self.client,
-            &build_info.project,
-            &build_info.package,
+            self.client.clone(),
+            build_info.project.clone(),
+            build_info.package.clone(),
             &BuildMetaOptions {
                 history_retrieval: BuildHistoryRetrieval::Full,
-                wait_options: Default::default(),
+                // Getting disabled repos has to happen *after* the upload,
+                // since the new version can change the supported architectures.
+                disabled_repos: DisabledRepos::Keep,
             },
         )
         .await?;
@@ -324,16 +329,21 @@ impl ObsJobHandler {
         // exist yet, get it now but without history, so we leave the previous
         // endtime empty (if there was no previous package, there were no
         // previous builds).
-        let mut build_meta = if let Some(build_meta) = initial_build_meta {
+        let mut build_meta = if let Some(mut build_meta) = initial_build_meta {
+            build_meta
+                .remove_disabled_repos(&Default::default())
+                .await?;
             build_meta
         } else {
             BuildMeta::get(
-                &self.client,
-                &build_info.project,
-                &build_info.package,
+                self.client.clone(),
+                build_info.project.clone(),
+                build_info.package.clone(),
                 &BuildMetaOptions {
                     history_retrieval: BuildHistoryRetrieval::None,
-                    wait_options: Default::default(),
+                    disabled_repos: DisabledRepos::Skip {
+                        wait_options: Default::default(),
+                    },
                 },
             )
             .await?

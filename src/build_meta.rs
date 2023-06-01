@@ -21,7 +21,10 @@ pub struct CommitBuildInfo {
 
 #[derive(Debug)]
 pub struct BuildMeta {
-    pub enabled_repos: HashMap<RepoArch, obs::JobHistList>,
+    client: obs::Client,
+    project: String,
+    package: String,
+    repos: HashMap<RepoArch, obs::JobHistList>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,23 +33,29 @@ pub enum BuildHistoryRetrieval {
     None,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BuildMetaWaitOptions {
-    pub sleep_on_empty: Duration,
+    pub sleep_until_ready: Duration,
 }
 
 impl Default for BuildMetaWaitOptions {
     fn default() -> Self {
         Self {
-            sleep_on_empty: Duration::from_secs(15),
+            sleep_until_ready: Duration::from_secs(15),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum DisabledRepos {
+    Keep,
+    Skip { wait_options: BuildMetaWaitOptions },
 }
 
 #[derive(Debug)]
 pub struct BuildMetaOptions {
     pub history_retrieval: BuildHistoryRetrieval,
-    pub wait_options: BuildMetaWaitOptions,
+    pub disabled_repos: DisabledRepos,
 }
 
 #[instrument(skip(client))]
@@ -81,7 +90,7 @@ fn is_status_empty(status: &obs::BuildStatus) -> bool {
 }
 
 #[instrument(skip(client))]
-async fn get_status_if_not_broken(
+async fn get_status_when_ready(
     client: &obs::Client,
     project: &str,
     package: &str,
@@ -91,14 +100,14 @@ async fn get_status_if_not_broken(
 ) -> Result<obs::BuildStatus> {
     let mut status = get_status(client, project, package, repo, arch).await?;
 
-    if is_status_empty(&status) {
-        outputln!("Waiting for package contents to appear...");
+    if status.dirty || is_status_empty(&status) {
+        outputln!("Waiting for package to be ready...");
         for attempt in 0.. {
             debug!(?attempt);
-            tokio::time::sleep(options.sleep_on_empty).await;
+            tokio::time::sleep(options.sleep_until_ready).await;
 
             status = get_status(client, project, package, repo, arch).await?;
-            if !is_status_empty(&status) {
+            if !status.dirty && !is_status_empty(&status) {
                 break;
             }
         }
@@ -110,9 +119,9 @@ async fn get_status_if_not_broken(
 impl BuildMeta {
     #[instrument(skip(client))]
     pub async fn get_if_package_exists(
-        client: &obs::Client,
-        project: &str,
-        package: &str,
+        client: obs::Client,
+        project: String,
+        package: String,
         options: &BuildMetaOptions,
     ) -> Result<Option<BuildMeta>> {
         match Self::get(client, project, package, options).await {
@@ -135,9 +144,9 @@ impl BuildMeta {
 
     #[instrument(skip(client))]
     pub async fn get(
-        client: &obs::Client,
-        project: &str,
-        package: &str,
+        client: obs::Client,
+        project: String,
+        package: String,
         options: &BuildMetaOptions,
     ) -> Result<BuildMeta> {
         let project_meta =
@@ -147,25 +156,27 @@ impl BuildMeta {
 
         debug!(?project_meta);
 
-        let mut enabled_repos = HashMap::new();
+        let mut repos = HashMap::new();
 
         for repo_meta in project_meta.repositories {
             for arch in repo_meta.arches {
-                let status = get_status_if_not_broken(
-                    client,
-                    project,
-                    package,
-                    &repo_meta.name,
-                    &arch,
-                    &options.wait_options,
-                )
-                .await?;
-                if matches!(
-                    status.code,
-                    obs::PackageCode::Disabled | obs::PackageCode::Excluded
-                ) {
-                    debug!(repo = %repo_meta.name, %arch, "Disabling");
-                    continue;
+                if let DisabledRepos::Skip { wait_options } = &options.disabled_repos {
+                    let status = get_status_when_ready(
+                        &client,
+                        &project,
+                        &package,
+                        &repo_meta.name,
+                        &arch,
+                        wait_options,
+                    )
+                    .await?;
+                    if matches!(
+                        status.code,
+                        obs::PackageCode::Disabled | obs::PackageCode::Excluded
+                    ) {
+                        debug!(repo = %repo_meta.name, %arch, "Disabling");
+                        continue;
+                    }
                 }
 
                 let jobhist = match options.history_retrieval {
@@ -188,7 +199,7 @@ impl BuildMeta {
                     BuildHistoryRetrieval::None => obs::JobHistList { jobhist: vec![] },
                 };
 
-                enabled_repos.insert(
+                repos.insert(
                     RepoArch {
                         repo: repo_meta.name.clone(),
                         arch,
@@ -198,19 +209,47 @@ impl BuildMeta {
             }
         }
 
-        Ok(BuildMeta { enabled_repos })
+        Ok(BuildMeta {
+            client,
+            project,
+            package,
+            repos,
+        })
     }
 
     pub fn clear_stored_history(&mut self) {
-        for jobhist in self.enabled_repos.values_mut() {
+        for jobhist in self.repos.values_mut() {
             jobhist.jobhist.clear();
         }
+    }
+
+    pub async fn remove_disabled_repos(&mut self, options: &BuildMetaWaitOptions) -> Result<()> {
+        for repo_arch in self.repos.keys().cloned().collect::<Vec<_>>() {
+            let status = get_status_when_ready(
+                &self.client,
+                &self.project,
+                &self.package,
+                &repo_arch.repo,
+                &repo_arch.arch,
+                options,
+            )
+            .await?;
+            if matches!(
+                status.code,
+                obs::PackageCode::Disabled | obs::PackageCode::Excluded
+            ) {
+                debug!(repo = %repo_arch.repo, %repo_arch.arch, "Disabling");
+                self.repos.remove(&repo_arch);
+            }
+        }
+
+        Ok(())
     }
 
     pub fn get_commit_build_info(&self, srcmd5: &str) -> HashMap<RepoArch, CommitBuildInfo> {
         let mut repos = HashMap::new();
 
-        for (repo, jobhist) in &self.enabled_repos {
+        for (repo, jobhist) in &self.repos {
             let prev_endtime_for_commit = jobhist
                 .jobhist
                 .iter()
@@ -236,6 +275,7 @@ mod tests {
 
     use claim::*;
     use open_build_service_mock::*;
+    use rstest::rstest;
 
     use crate::test_support::*;
 
@@ -312,19 +352,21 @@ mod tests {
 
         let meta = assert_ok!(
             BuildMeta::get(
-                &client,
-                TEST_PROJECT,
-                TEST_PACKAGE_1,
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                TEST_PACKAGE_1.to_owned(),
                 &BuildMetaOptions {
                     history_retrieval: BuildHistoryRetrieval::Full,
-                    wait_options: Default::default(),
+                    disabled_repos: DisabledRepos::Skip {
+                        wait_options: Default::default()
+                    },
                 }
             )
             .await
         );
-        assert_eq!(meta.enabled_repos.len(), 2);
-        assert!(meta.enabled_repos.contains_key(&repo_arch_1));
-        assert!(meta.enabled_repos.contains_key(&repo_arch_2));
+        assert_eq!(meta.repos.len(), 2);
+        assert!(meta.repos.contains_key(&repo_arch_1));
+        assert!(meta.repos.contains_key(&repo_arch_2));
 
         let build_info = meta.get_commit_build_info(&srcmd5_1);
 
@@ -336,18 +378,20 @@ mod tests {
 
         let meta = assert_ok!(
             BuildMeta::get(
-                &client,
-                TEST_PROJECT,
-                TEST_PACKAGE_1,
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                TEST_PACKAGE_1.to_owned(),
                 &BuildMetaOptions {
                     history_retrieval: BuildHistoryRetrieval::None,
-                    wait_options: Default::default(),
+                    disabled_repos: DisabledRepos::Skip {
+                        wait_options: Default::default()
+                    },
                 }
             )
             .await
         );
-        assert_eq!(meta.enabled_repos.len(), 2);
-        assert!(meta.enabled_repos.contains_key(&repo_arch_1));
+        assert_eq!(meta.repos.len(), 2);
+        assert!(meta.repos.contains_key(&repo_arch_1));
 
         let build_info = meta.get_commit_build_info(&srcmd5_1);
 
@@ -356,7 +400,7 @@ mod tests {
         let arch_2 = assert_some!(build_info.get(&repo_arch_2));
         assert_none!(arch_2.prev_endtime_for_commit);
 
-        assert!(meta.enabled_repos.contains_key(&repo_arch_2));
+        assert!(meta.repos.contains_key(&repo_arch_2));
 
         mock.set_package_build_status(
             TEST_PROJECT,
@@ -381,17 +425,19 @@ mod tests {
 
         let meta = assert_ok!(
             BuildMeta::get(
-                &client,
-                TEST_PROJECT,
-                TEST_PACKAGE_1,
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                TEST_PACKAGE_1.to_owned(),
                 &BuildMetaOptions {
                     history_retrieval: BuildHistoryRetrieval::Full,
-                    wait_options: Default::default(),
+                    disabled_repos: DisabledRepos::Skip {
+                        wait_options: Default::default()
+                    },
                 }
             )
             .await
         );
-        assert_eq!(meta.enabled_repos.len(), 1);
+        assert_eq!(meta.repos.len(), 1);
 
         let build_info = meta.get_commit_build_info(&srcmd5_2);
 
@@ -413,17 +459,19 @@ mod tests {
 
         let mut meta = assert_ok!(
             BuildMeta::get(
-                &client,
-                TEST_PROJECT,
-                TEST_PACKAGE_1,
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                TEST_PACKAGE_1.to_owned(),
                 &BuildMetaOptions {
                     history_retrieval: BuildHistoryRetrieval::Full,
-                    wait_options: Default::default(),
+                    disabled_repos: DisabledRepos::Skip {
+                        wait_options: Default::default()
+                    },
                 }
             )
             .await
         );
-        assert_eq!(meta.enabled_repos.len(), 1);
+        assert_eq!(meta.repos.len(), 1);
 
         let build_info = meta.get_commit_build_info(&srcmd5_1);
 
@@ -446,22 +494,45 @@ mod tests {
 
         let meta = assert_ok!(
             BuildMeta::get(
-                &client,
-                TEST_PROJECT,
-                TEST_PACKAGE_1,
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                TEST_PACKAGE_1.to_owned(),
                 &BuildMetaOptions {
                     history_retrieval: BuildHistoryRetrieval::Full,
-                    wait_options: Default::default()
+                    disabled_repos: DisabledRepos::Skip {
+                        wait_options: Default::default()
+                    },
                 }
             )
             .await
         );
-        assert_eq!(meta.enabled_repos.len(), 0);
+        assert_eq!(meta.repos.len(), 0);
+
+        let mut meta = assert_ok!(
+            BuildMeta::get(
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                TEST_PACKAGE_1.to_owned(),
+                &BuildMetaOptions {
+                    history_retrieval: BuildHistoryRetrieval::Full,
+                    disabled_repos: DisabledRepos::Keep,
+                }
+            )
+            .await
+        );
+        assert_eq!(meta.repos.len(), 2);
+
+        assert_ok!(meta.remove_disabled_repos(&Default::default()).await);
+        assert_eq!(meta.repos.len(), 0);
     }
 
+    #[rstest]
     #[tokio::test]
-    async fn test_build_meta_ignores_empty() {
-        const EMPTY_SLEEP_DURATION: Duration = Duration::from_millis(100);
+    async fn test_build_meta_ignores_empty(
+        #[values(false, true)] skip_early: bool,
+        #[values(false, true)] dirty: bool,
+    ) {
+        const SLEEP_DURATION: Duration = Duration::from_millis(100);
 
         let repo_arch_1 = RepoArch {
             repo: TEST_REPO.to_owned(),
@@ -495,33 +566,43 @@ mod tests {
 
         let meta = assert_ok!(
             BuildMeta::get(
-                &client,
-                TEST_PROJECT,
-                TEST_PACKAGE_1,
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                TEST_PACKAGE_1.to_owned(),
                 &BuildMetaOptions {
                     history_retrieval: BuildHistoryRetrieval::Full,
-                    wait_options: Default::default(),
+                    disabled_repos: DisabledRepos::Skip {
+                        wait_options: Default::default()
+                    }
                 }
             )
             .await
         );
-        assert_eq!(meta.enabled_repos.len(), 1);
-        assert!(meta.enabled_repos.contains_key(&repo_arch_1));
+        assert_eq!(meta.repos.len(), 1);
+        assert!(meta.repos.contains_key(&repo_arch_1));
 
         mock.set_package_build_status(
             TEST_PROJECT,
             TEST_REPO,
             TEST_ARCH_1,
             TEST_PACKAGE_1.to_owned(),
-            MockBuildStatus {
-                code: MockPackageCode::Broken,
-                details: "empty".to_owned(),
-                ..Default::default()
+            if dirty {
+                MockBuildStatus {
+                    code: MockPackageCode::Broken,
+                    dirty: true,
+                    ..Default::default()
+                }
+            } else {
+                MockBuildStatus {
+                    code: MockPackageCode::Broken,
+                    details: "empty".to_owned(),
+                    ..Default::default()
+                }
             },
         );
 
         tokio::spawn(async move {
-            tokio::time::sleep(EMPTY_SLEEP_DURATION * 10).await;
+            tokio::time::sleep(SLEEP_DURATION * 10).await;
             mock.set_package_build_status(
                 TEST_PROJECT,
                 TEST_REPO,
@@ -531,20 +612,37 @@ mod tests {
             );
         });
 
-        let meta = assert_ok!(
+        let mut meta = assert_ok!(
             BuildMeta::get(
-                &client,
-                TEST_PROJECT,
-                TEST_PACKAGE_1,
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                TEST_PACKAGE_1.to_owned(),
                 &BuildMetaOptions {
                     history_retrieval: BuildHistoryRetrieval::Full,
-                    wait_options: BuildMetaWaitOptions {
-                        sleep_on_empty: EMPTY_SLEEP_DURATION,
+                    disabled_repos: if skip_early {
+                        DisabledRepos::Skip {
+                            wait_options: BuildMetaWaitOptions {
+                                sleep_until_ready: SLEEP_DURATION,
+                            },
+                        }
+                    } else {
+                        DisabledRepos::Keep
                     },
                 }
             )
             .await
         );
-        assert_eq!(meta.enabled_repos.len(), 0);
+
+        if !skip_early {
+            assert_eq!(meta.repos.len(), 1);
+            assert_ok!(
+                meta.remove_disabled_repos(&BuildMetaWaitOptions {
+                    sleep_until_ready: SLEEP_DURATION,
+                })
+                .await
+            );
+        }
+
+        assert_eq!(meta.repos.len(), 0);
     }
 }

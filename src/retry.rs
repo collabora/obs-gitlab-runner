@@ -30,7 +30,7 @@ fn is_caused_by_client_error(report: &Report) -> bool {
     })
 }
 
-async fn retry_request_impl<T, E, Fut, Func>(backoff_limit: Duration, func: Func) -> Result<T>
+async fn retry_request_impl<T, E, Fut, Func>(_backoff_limit: Duration, func: Func) -> Result<T>
 where
     Fut: Future<Output = Result<T, E>>,
     Func: FnMut() -> Fut,
@@ -39,7 +39,10 @@ where
     let func = Arc::new(Mutex::new(func));
     backoff::future::retry(
         ExponentialBackoff {
-            max_elapsed_time: Some(backoff_limit),
+            // We normally want to stop retrying after a while by setting max_elapsed_time.
+            // However, in order to work around unexplained transient failures, we want to
+            // keep retrying until successful (or the process is terminated).
+            max_elapsed_time: None,
             ..Default::default()
         },
         move || {
@@ -86,6 +89,7 @@ where
 mod tests {
     use claim::*;
     use open_build_service_api as obs;
+    use tokio::time::timeout;
     use wiremock::{
         matchers::{method, path_regex},
         Mock, MockServer, ResponseTemplate,
@@ -124,27 +128,34 @@ mod tests {
 
         let mut attempts = 0;
         assert_err!(
-            retry_request_impl(LIMIT, || {
-                attempts += 1;
-                async { client.project("500".to_owned()).meta().await }
-            })
-            .await
+            // As `retry_request_impl()` won't return and keep trying as long as it
+            // encounters transient errors, we must wrap this call into a timeout to
+            // avoid being caught in an infinite loop
+            timeout(
+                LIMIT,
+                retry_request_impl(LIMIT, || {
+                    attempts += 1;
+                    async { client.project("500".to_owned()).meta().await }
+                })
+            ).await
         );
         assert_gt!(attempts, 1);
 
-        let mut attempts = 0;
+        attempts = 0;
         assert_err!(
-            retry_request_impl(LIMIT, || {
-                attempts += 1;
-                async {
-                    client
-                        .project("500".to_owned())
-                        .meta()
-                        .await
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-                }
-            })
-            .await
+            timeout(
+                LIMIT,
+                retry_request_impl(LIMIT, || {
+                    attempts += 1;
+                    async {
+                        client
+                            .project("500".to_owned())
+                            .meta()
+                            .await
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                    }
+                })
+            ).await
         );
         assert_gt!(attempts, 1);
 

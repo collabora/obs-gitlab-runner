@@ -7,7 +7,7 @@ use tokio::{fs::File as AsyncFile, io::AsyncSeekExt};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{info_span, instrument, Instrument};
 
-use crate::retry::{retry_large_request, retry_request};
+use crate::retry::retry_request;
 
 #[instrument(skip(client))]
 pub async fn download_binaries(
@@ -28,7 +28,7 @@ pub async fn download_binaries(
     let mut binaries = HashMap::new();
 
     for binary in binary_list.binaries {
-        let mut dest = retry_large_request(|| {
+        let mut dest = retry_request(|| {
             let binary = binary.clone();
             let client = client.clone();
             async move {

@@ -8,6 +8,8 @@ use open_build_service_api as obs;
 use tokio::sync::Mutex;
 use tracing::instrument;
 
+const INITIAL_INTERVAL: Duration = Duration::from_millis(300);
+
 fn is_client_error(err: &(dyn std::error::Error + 'static)) -> bool {
     err.downcast_ref::<reqwest::Error>()
         .and_then(|e| e.status())
@@ -30,7 +32,8 @@ fn is_caused_by_client_error(report: &Report) -> bool {
     })
 }
 
-async fn retry_request_impl<T, E, Fut, Func>(backoff_limit: Duration, func: Func) -> Result<T>
+#[instrument(skip(func))]
+pub async fn retry_request<T, E, Fut, Func>(func: Func) -> Result<T>
 where
     Fut: Future<Output = Result<T, E>>,
     Func: FnMut() -> Fut,
@@ -39,7 +42,8 @@ where
     let func = Arc::new(Mutex::new(func));
     backoff::future::retry(
         ExponentialBackoff {
-            max_elapsed_time: Some(backoff_limit),
+            max_elapsed_time: None,
+            initial_interval: INITIAL_INTERVAL,
             ..Default::default()
         },
         move || {
@@ -60,32 +64,11 @@ where
     .await
 }
 
-#[instrument(skip(func))]
-pub async fn retry_request<T, E, Fut, Func>(func: Func) -> Result<T>
-where
-    Fut: Future<Output = Result<T, E>>,
-    Func: FnMut() -> Fut,
-    E: Into<Report>,
-{
-    const BACKOFF_LIMIT: Duration = Duration::from_secs(10 * 60); // 10 minutes
-    retry_request_impl(BACKOFF_LIMIT, func).await
-}
-
-#[instrument(skip(func))]
-pub async fn retry_large_request<T, E, Fut, Func>(func: Func) -> Result<T>
-where
-    Fut: Future<Output = Result<T, E>>,
-    Func: FnMut() -> Fut,
-    E: Into<Report>,
-{
-    const BACKOFF_LIMIT: Duration = Duration::from_secs(60 * 60); // 1 hour
-    retry_request_impl(BACKOFF_LIMIT, func).await
-}
-
 #[cfg(test)]
 mod tests {
     use claim::*;
     use open_build_service_api as obs;
+    use rstest::*;
     use wiremock::{
         matchers::{method, path_regex},
         Mock, MockServer, ResponseTemplate,
@@ -95,10 +78,12 @@ mod tests {
 
     use super::*;
 
-    const LIMIT: Duration = Duration::from_secs(1);
+    fn wrap_in_io_error(err: obs::Error) -> std::io::Error {
+        std::io::Error::new(std::io::ErrorKind::Other, err)
+    }
 
-    #[tokio::test]
-    async fn test_retry_on_non_client_errors() {
+    #[fixture]
+    async fn server() -> MockServer {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -116,6 +101,13 @@ mod tests {
             .mount(&server)
             .await;
 
+        server
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_retry_on_non_client_errors(server: impl Future<Output = MockServer>) {
+        let server = server.await;
         let client = obs::Client::new(
             server.uri().parse().unwrap(),
             TEST_USER.to_owned(),
@@ -124,50 +116,89 @@ mod tests {
 
         let mut attempts = 0;
         assert_err!(
-            retry_request_impl(LIMIT, || {
-                attempts += 1;
-                async { client.project("500".to_owned()).meta().await }
-            })
+            tokio::time::timeout(
+                Duration::from_millis(2000),
+                retry_request(|| {
+                    attempts += 1;
+                    async { client.project("500".to_owned()).meta().await }
+                })
+            )
             .await
         );
         assert_gt!(attempts, 1);
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_retry_on_nested_non_client_errors(server: impl Future<Output = MockServer>) {
+        let server = server.await;
+        let client = obs::Client::new(
+            server.uri().parse().unwrap(),
+            TEST_USER.to_owned(),
+            TEST_PASS.to_owned(),
+        );
 
         let mut attempts = 0;
         assert_err!(
-            retry_request_impl(LIMIT, || {
-                attempts += 1;
-                async {
-                    client
-                        .project("500".to_owned())
-                        .meta()
-                        .await
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-                }
-            })
+            tokio::time::timeout(
+                Duration::from_millis(2000),
+                retry_request(|| {
+                    attempts += 1;
+                    async {
+                        client
+                            .project("500".to_owned())
+                            .meta()
+                            .await
+                            .map_err(wrap_in_io_error)
+                    }
+                })
+            )
             .await
         );
         assert_gt!(attempts, 1);
+    }
 
-        attempts = 0;
+    #[rstest]
+    #[tokio::test]
+    async fn test_no_retry_on_client_errors(server: impl Future<Output = MockServer>) {
+        let server = server.await;
+        let client = obs::Client::new(
+            server.uri().parse().unwrap(),
+            TEST_USER.to_owned(),
+            TEST_PASS.to_owned(),
+        );
+
+        let mut attempts = 0;
         assert_err!(
-            retry_request_impl(LIMIT, || {
+            retry_request(|| {
                 attempts += 1;
                 async { client.project("403".to_owned()).meta().await }
             })
             .await
         );
         assert_eq!(attempts, 1);
+    }
 
-        attempts = 0;
+    #[rstest]
+    #[tokio::test]
+    async fn test_no_retry_on_nested_client_errors(server: impl Future<Output = MockServer>) {
+        let server = server.await;
+        let client = obs::Client::new(
+            server.uri().parse().unwrap(),
+            TEST_USER.to_owned(),
+            TEST_PASS.to_owned(),
+        );
+
+        let mut attempts = 0;
         assert_err!(
-            retry_request_impl(LIMIT, || {
+            retry_request(|| {
                 attempts += 1;
                 async {
                     client
                         .project("403".to_owned())
                         .meta()
                         .await
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                        .map_err(wrap_in_io_error)
                 }
             })
             .await

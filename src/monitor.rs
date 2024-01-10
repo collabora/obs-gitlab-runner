@@ -11,7 +11,7 @@ use tokio::{
 };
 use tracing::{debug, instrument};
 
-use crate::retry::{retry_large_request, retry_request};
+use crate::retry::retry_request;
 
 #[derive(Debug)]
 pub enum PackageCompletion {
@@ -245,7 +245,7 @@ impl ObsMonitor {
     pub async fn download_build_log(&self) -> Result<LogFile> {
         const LOG_LEN_TO_CHECK_FOR_MD5: u64 = 2500;
 
-        let mut file = retry_large_request(|| async {
+        let mut file = retry_request(|| async {
             let mut file = AsyncFile::from_std(
                 tempfile::tempfile().wrap_err("Failed to create tempfile to build log")?,
             );

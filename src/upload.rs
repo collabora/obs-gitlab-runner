@@ -10,11 +10,7 @@ use md5::{Digest, Md5};
 use open_build_service_api as obs;
 use tracing::{debug, info_span, instrument, trace, Instrument};
 
-use crate::{
-    artifacts::ArtifactDirectory,
-    dsc::Dsc,
-    retry::{retry_large_request, retry_request},
-};
+use crate::{artifacts::ArtifactDirectory, dsc::Dsc, retry::retry_request};
 
 type Md5String = String;
 
@@ -234,7 +230,7 @@ impl ObsDscUploader {
         debug!("Uploading file");
         let file = artifacts.get_file(root.join(filename).as_str()).await?;
 
-        retry_large_request(|| {
+        retry_request(|| {
             file.try_clone().then(|file| async {
                 let file = file.wrap_err("Failed to clone file")?;
                 self.client

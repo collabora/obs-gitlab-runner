@@ -133,6 +133,7 @@ generate-monitor RUNNER_TAG
   [--build-info BUILD_INFO_FILE=build-info.yml]
   [--pipeline-out PIPELINE_FILE=obs.yml]
   [--job-prefix MONITOR_JOB_PREFIX=obs]
+  [--job-timeout MONITOR_JOB_TIMEOUT]
   [--artifact-expiration ARTIFACT_EXPIRATION='3 days']
   [--build-log-out BUILD_LOG_FILE=build.log]
 ```
@@ -213,6 +214,12 @@ Changes the filename of the child pipeline YAML.
 
 Changes the prefix that will be prepended to each generated job
 (`MONITOR_JOB_PREFIX-REPOSITORY-ARCH`).
+
+##### `--job-timeout MONITOR_JOB_TIMEOUT`
+
+Changes the timeout for each generated job, using the [job `timeout`
+setting](https://docs.gitlab.com/ee/ci/yaml/#timeout). If not passed, the
+timeout will not be set.
 
 ##### `--artifact-expiration ARTIFACT_EXPIRATION='3 days'`
 

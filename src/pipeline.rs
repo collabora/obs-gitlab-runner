@@ -17,6 +17,7 @@ pub struct GeneratePipelineOptions {
     pub tags: Vec<String>,
     pub artifact_expiration: String,
     pub prefix: String,
+    pub timeout: Option<String>,
     pub rules: Option<String>,
     pub build_log_out: String,
     pub download_binaries: PipelineDownloadBinaries,
@@ -35,6 +36,8 @@ struct JobSpec {
     before_script: Vec<String>,
     script: Vec<String>,
     after_script: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeout: Option<String>,
     artifacts: ArtifactsSpec,
     #[serde(skip_serializing_if = "Option::is_none")]
     rules: Option<serde_yaml::Sequence>,
@@ -114,6 +117,7 @@ pub fn generate_monitor_pipeline(
                 // ensure that they're set to be empty.
                 before_script: vec![],
                 after_script: vec![],
+                timeout: options.timeout.clone(),
                 artifacts: ArtifactsSpec {
                     paths: artifact_paths,
                     when: "always".to_owned(),

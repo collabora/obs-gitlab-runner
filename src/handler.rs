@@ -84,6 +84,8 @@ struct GenerateMonitorAction {
     pipeline_out: String,
     #[clap(long, default_value_t = DEFAULT_PIPELINE_JOB_PREFIX.to_owned())]
     job_prefix: String,
+    #[clap(long)]
+    job_timeout: Option<String>,
     #[clap(long, default_value_t = DEFAULT_ARTIFACT_EXPIRATION.to_owned())]
     artifact_expiration: String,
     #[clap(long, default_value_t = DEFAULT_BUILD_LOG.into())]
@@ -410,6 +412,7 @@ impl ObsJobHandler {
                 tags: vec![args.tag],
                 artifact_expiration: args.artifact_expiration,
                 prefix: args.job_prefix,
+                timeout: args.job_timeout,
                 rules: args.rules,
                 download_binaries: if let Some(build_results_dir) = args.build_results_dir {
                     PipelineDownloadBinaries::OnSuccess {
@@ -1266,6 +1269,7 @@ mod tests {
         download_binaries: bool,
     ) {
         const TEST_JOB_RUNNER_TAG: &str = "test-tag";
+        const TEST_MONITOR_TIMEOUT: &str = "1 day";
         const TEST_BUILD_RESULTS_DIR: &str = "results";
         const TEST_BUILD_RESULT: &str = "test-build-result";
         const TEST_BUILD_RESULT_CONTENTS: &[u8] = b"abcdef";
@@ -1307,8 +1311,8 @@ mod tests {
         );
 
         let mut generate_command = format!(
-            "generate-monitor {} --rules '[{{a: 1}}, {{b: 2}}]'",
-            TEST_JOB_RUNNER_TAG
+            "generate-monitor {} --job-timeout '{}' --rules '[{{a: 1}}, {{b: 2}}]'",
+            TEST_JOB_RUNNER_TAG, TEST_MONITOR_TIMEOUT
         );
         if download_binaries {
             generate_command += &format!(" --download-build-results-to {}", TEST_BUILD_RESULTS_DIR);
@@ -1431,6 +1435,13 @@ mod tests {
                 .unwrap();
             assert_eq!(tags.len(), 1);
             assert_eq!(tags[0].as_str().unwrap(), TEST_JOB_RUNNER_TAG);
+
+            let timeout = monitor_map
+                .get(&"timeout".into())
+                .unwrap()
+                .as_str()
+                .unwrap();
+            assert_eq!(timeout, TEST_MONITOR_TIMEOUT);
 
             let rules: Vec<_> = monitor_map
                 .get(&"rules".into())

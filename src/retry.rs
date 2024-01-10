@@ -1,11 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use backoff::ExponentialBackoff;
 use futures_util::Future;
 
 use color_eyre::{eyre::Result, Report};
 use open_build_service_api as obs;
-use tokio::sync::Mutex;
 use tracing::instrument;
 
 const INITIAL_INTERVAL: Duration = Duration::from_millis(300);
@@ -36,29 +35,24 @@ fn is_caused_by_client_error(report: &Report) -> bool {
 pub async fn retry_request<T, E, Fut, Func>(func: Func) -> Result<T>
 where
     Fut: Future<Output = Result<T, E>>,
-    Func: FnMut() -> Fut,
+    Func: Fn() -> Fut,
     E: Into<Report>,
 {
-    let func = Arc::new(Mutex::new(func));
     backoff::future::retry(
         ExponentialBackoff {
             max_elapsed_time: None,
             initial_interval: INITIAL_INTERVAL,
             ..Default::default()
         },
-        move || {
-            let func = func.clone();
-            async move {
-                let mut func = func.lock().await;
-                func().await.map_err(|err| {
-                    let report = err.into();
-                    if is_caused_by_client_error(&report) {
-                        backoff::Error::permanent(report)
-                    } else {
-                        backoff::Error::transient(report)
-                    }
-                })
-            }
+        || async {
+            func().await.map_err(|err| {
+                let report = err.into();
+                if is_caused_by_client_error(&report) {
+                    backoff::Error::permanent(report)
+                } else {
+                    backoff::Error::transient(report)
+                }
+            })
         },
     )
     .await
@@ -66,6 +60,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicI32, Ordering};
+
     use claim::*;
     use open_build_service_api as obs;
     use rstest::*;
@@ -114,18 +110,18 @@ mod tests {
             TEST_PASS.to_owned(),
         );
 
-        let mut attempts = 0;
+        let attempts = AtomicI32::new(0);
         assert_err!(
             tokio::time::timeout(
                 Duration::from_millis(2000),
                 retry_request(|| {
-                    attempts += 1;
+                    attempts.fetch_add(1, Ordering::SeqCst);
                     async { client.project("500".to_owned()).meta().await }
                 })
             )
             .await
         );
-        assert_gt!(attempts, 1);
+        assert_gt!(attempts.load(Ordering::SeqCst), 1);
     }
 
     #[rstest]
@@ -138,12 +134,12 @@ mod tests {
             TEST_PASS.to_owned(),
         );
 
-        let mut attempts = 0;
+        let attempts = AtomicI32::new(0);
         assert_err!(
             tokio::time::timeout(
                 Duration::from_millis(2000),
                 retry_request(|| {
-                    attempts += 1;
+                    attempts.fetch_add(1, Ordering::SeqCst);
                     async {
                         client
                             .project("500".to_owned())
@@ -155,7 +151,7 @@ mod tests {
             )
             .await
         );
-        assert_gt!(attempts, 1);
+        assert_gt!(attempts.load(Ordering::SeqCst), 1);
     }
 
     #[rstest]
@@ -168,15 +164,15 @@ mod tests {
             TEST_PASS.to_owned(),
         );
 
-        let mut attempts = 0;
+        let attempts = AtomicI32::new(0);
         assert_err!(
             retry_request(|| {
-                attempts += 1;
+                attempts.fetch_add(1, Ordering::SeqCst);
                 async { client.project("403".to_owned()).meta().await }
             })
             .await
         );
-        assert_eq!(attempts, 1);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
     #[rstest]
@@ -189,10 +185,10 @@ mod tests {
             TEST_PASS.to_owned(),
         );
 
-        let mut attempts = 0;
+        let attempts = AtomicI32::new(0);
         assert_err!(
             retry_request(|| {
-                attempts += 1;
+                attempts.fetch_add(1, Ordering::SeqCst);
                 async {
                     client
                         .project("403".to_owned())
@@ -203,6 +199,6 @@ mod tests {
             })
             .await
         );
-        assert_eq!(attempts, 1);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 }

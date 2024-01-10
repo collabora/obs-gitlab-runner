@@ -32,7 +32,7 @@ tracing-error = "0.2"
 tracing-subscriber = { version = "0.3", features = ["default", "json"] }
 url = "2.2"
 
-gitlab-runner = "0.0.5"
+gitlab-runner = "0.0.7"
 # gitlab-runner = { path = "../gitlab-runner-rs/gitlab-runner" }
 open-build-service-api = { git = "https://github.com/collabora/open-build-service-rs" }
 # open-build-service-api = { path = "../open-build-service-rs/open-build-service-api" }

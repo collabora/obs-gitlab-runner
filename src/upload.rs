@@ -687,7 +687,7 @@ mod tests {
                 client.clone(),
                 TEST_PROJECT.to_owned(),
                 None,
-                dsc1_file.to_owned().into(),
+                dsc1_file.to_owned(),
                 &artifacts
             )
             .await
@@ -740,7 +740,7 @@ mod tests {
                 client.clone(),
                 TEST_PROJECT.to_owned(),
                 None,
-                dsc2_file.to_owned().into(),
+                dsc2_file.to_owned(),
                 &artifacts
             )
             .await
@@ -777,7 +777,7 @@ mod tests {
                 client.clone(),
                 TEST_PROJECT.to_owned(),
                 None,
-                dsc3_file.to_owned().into(),
+                dsc3_file.to_owned(),
                 &artifacts
             )
             .await
@@ -809,7 +809,7 @@ mod tests {
                 client.clone(),
                 TEST_PROJECT.to_owned(),
                 None,
-                dsc4_file.to_owned().into(),
+                dsc4_file.to_owned(),
                 &artifacts
             )
             .await
@@ -846,7 +846,7 @@ mod tests {
                 client.clone(),
                 TEST_PROJECT.to_owned(),
                 Some(branched_project.clone()),
-                dsc4_file.to_owned().into(),
+                dsc4_file.to_owned(),
                 &artifacts
             )
             .await

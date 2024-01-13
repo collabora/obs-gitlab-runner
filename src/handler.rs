@@ -977,7 +977,7 @@ mod tests {
 
         let dsc1_bad_file = "test1-bad.dsc";
         let dsc1_bad_contents =
-            dsc1_contents.replace(&test1_file, &(test1_file.to_owned() + ".missing"));
+            dsc1_contents.replace(test1_file, &(test1_file.to_owned() + ".missing"));
 
         context.obs_mock.add_project(TEST_PROJECT.to_owned());
 
@@ -1049,7 +1049,7 @@ mod tests {
 
         let results = get_job_artifacts(&dput);
         let build_info: ObsBuildInfo =
-            serde_yaml::from_slice(&results.get(DEFAULT_BUILD_INFO).unwrap()).unwrap();
+            serde_yaml::from_slice(results.get(DEFAULT_BUILD_INFO).unwrap()).unwrap();
 
         assert_eq!(build_info.project, created_project);
         assert_eq!(build_info.package, TEST_PACKAGE_1);
@@ -1192,7 +1192,7 @@ mod tests {
 
         let results = get_job_artifacts(&dput);
         let build_info: ObsBuildInfo =
-            serde_yaml::from_slice(&results.get(DEFAULT_BUILD_INFO).unwrap()).unwrap();
+            serde_yaml::from_slice(results.get(DEFAULT_BUILD_INFO).unwrap()).unwrap();
 
         assert_eq!(build_info.project, created_project);
         assert_eq!(build_info.package, TEST_PACKAGE_1);
@@ -1332,7 +1332,7 @@ mod tests {
 
         let results = get_job_artifacts(&generate);
         let pipeline_yaml: serde_yaml::Value = assert_ok!(serde_yaml::from_slice(
-            &results.get(DEFAULT_MONITOR_PIPELINE).unwrap()
+            results.get(DEFAULT_MONITOR_PIPELINE).unwrap()
         ));
         let pipeline_map = pipeline_yaml.as_mapping().unwrap();
 

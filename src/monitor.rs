@@ -336,7 +336,7 @@ mod tests {
         );
 
         assert_ok!(monitor.check_log_md5(&format!("srcmd5 '{}'", srcmd5)));
-        assert_err!(monitor.check_log_md5(&format!("srcmd5 'xyz123'")));
+        assert_err!(monitor.check_log_md5("srcmd5 'xyz123'"));
         assert_err!(monitor.check_log_md5(&format!("'{}'", srcmd5)));
 
         mock.branch(

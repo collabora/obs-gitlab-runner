@@ -89,3 +89,20 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  # Job to key success status against
+  allgreen:
+    name: allgreen
+    if: always()
+    needs:
+      - check
+      - fmt
+      - test
+      - clippy
+      - docker-image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decide whether the needed jobs succeeded or failed
+        uses: re-actors/alls-green@release/v1
+        with:
+          jobs: ${{ toJSON(needs) }}

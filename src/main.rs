@@ -1,4 +1,4 @@
-use std::{fmt, str::FromStr};
+use std::{fmt, str::FromStr, sync::Arc};
 
 use clap::Parser;
 use color_eyre::eyre::Result;
@@ -88,6 +88,8 @@ struct Args {
     log_format: LogFormat,
     #[clap(long, env = "OBS_RUNNER_MAX_JOBS", default_value_t = 64, parse(try_from_str=parse_max_jobs))]
     max_jobs: usize,
+    #[clap(long, env = "OBS_RUNNER_DEFAULT_MONITOR_JOB_TIMEOUT")]
+    default_monitor_job_timeout: Option<String>,
 }
 
 fn formatter_layer<E, S>(format: E, targets: Targets) -> impl Layer<S>
@@ -134,15 +136,25 @@ async fn main() {
 
     color_eyre::install().unwrap();
 
+    let default_monitor_job_timeout = Arc::new(args.default_monitor_job_timeout);
+
     info!("Starting runner...");
     runner
         .run(
-            |job| async {
-                ObsJobHandler::from_obs_config_in_job(job, HandlerOptions::default()).map_err(
-                    |err| {
+            move |job| {
+                let default_monitor_job_timeout = (*default_monitor_job_timeout).clone();
+                async {
+                    ObsJobHandler::from_obs_config_in_job(
+                        job,
+                        HandlerOptions {
+                            default_monitor_job_timeout,
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(|err| {
                         error!("Failed to create new client: {:?}", err);
-                    },
-                )
+                    })
+                }
             },
             args.max_jobs,
         )

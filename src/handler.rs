@@ -207,9 +207,10 @@ fn get_job_variable<'job>(job: &'job Job, key: &str) -> Result<Variable<'job>> {
 #[derive(Debug, Derivative)]
 #[derivative(Default)]
 pub struct HandlerOptions {
-    monitor: PackageMonitoringOptions,
+    pub monitor: PackageMonitoringOptions,
+    pub default_monitor_job_timeout: Option<String>,
     #[derivative(Default(value = "LOG_TAIL_2MB"))]
-    log_tail: u64,
+    pub log_tail: u64,
 }
 
 pub struct ObsJobHandler {
@@ -412,7 +413,9 @@ impl ObsJobHandler {
                 tags: vec![args.tag],
                 artifact_expiration: args.artifact_expiration,
                 prefix: args.job_prefix,
-                timeout: args.job_timeout,
+                timeout: args
+                    .job_timeout
+                    .or_else(|| self.options.default_monitor_job_timeout.clone()),
                 rules: args.rules,
                 download_binaries: if let Some(build_results_dir) = args.build_results_dir {
                     PipelineDownloadBinaries::OnSuccess {
@@ -740,8 +743,19 @@ mod tests {
 
     const JOB_TIMEOUT: u64 = 3600;
     const TEST_LOG_TAIL: u64 = 50;
-
     const OLD_STATUS_SLEEP_DURATION: Duration = Duration::from_millis(100);
+
+    const DEFAULT_HANDLER_OPTIONS: HandlerOptions = HandlerOptions {
+        default_monitor_job_timeout: None,
+        log_tail: TEST_LOG_TAIL,
+        monitor: PackageMonitoringOptions {
+            sleep_on_building: Duration::ZERO,
+            sleep_on_old_status: OLD_STATUS_SLEEP_DURATION,
+            // High limit, since we don't really test that
+            // functionality in the handler tests.
+            max_old_status_retries: 99,
+        },
+    };
 
     static COLOR_EYRE_INSTALL: Once = Once::new();
 
@@ -933,23 +947,15 @@ mod tests {
             .collect()
     }
 
-    async fn run_obs_handler(context: &mut TestContext) {
+    async fn run_obs_handler_with_options(context: &mut TestContext, options: HandlerOptions) {
         run_handler(context, move |job| {
-            assert_ok!(ObsJobHandler::from_obs_config_in_job(
-                job,
-                HandlerOptions {
-                    log_tail: TEST_LOG_TAIL,
-                    monitor: PackageMonitoringOptions {
-                        sleep_on_building: Duration::ZERO,
-                        sleep_on_old_status: OLD_STATUS_SLEEP_DURATION,
-                        // High limit, since we don't really test that
-                        // functionality in the handler tests.
-                        max_old_status_retries: 99,
-                    },
-                },
-            ))
+            assert_ok!(ObsJobHandler::from_obs_config_in_job(job, options))
         })
         .await;
+    }
+
+    async fn run_obs_handler(context: &mut TestContext) {
+        run_obs_handler_with_options(context, DEFAULT_HANDLER_OPTIONS).await;
     }
 
     #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -1824,6 +1830,114 @@ mod tests {
 
             run_obs_handler(&mut context).await;
             assert_eq!(job.state(), MockJobState::Failed);
+        })
+        .await;
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum GenerateMonitorTimeoutLocation {
+        HandlerOption,
+        Argument,
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_generate_monitor_timeouts(
+        #[future] test_context: (TestContext, GitlabLayer),
+        #[values(
+            None,
+            Some(GenerateMonitorTimeoutLocation::HandlerOption),
+            Some(GenerateMonitorTimeoutLocation::Argument)
+        )]
+        test: Option<GenerateMonitorTimeoutLocation>,
+    ) {
+        const TEST_MONITOR_TIMEOUT: &str = "10 minutes";
+
+        let (mut context, layer) = test_context.await;
+        with_tracing(layer, async {
+            let build_info = ObsBuildInfo {
+                project: TEST_PROJECT.to_owned(),
+                package: TEST_PACKAGE_1.to_owned(),
+                rev: Some("1".to_owned()),
+                srcmd5: Some("abc".to_owned()),
+                is_branched: false,
+                enabled_repos: [(
+                    RepoArch {
+                        repo: TEST_REPO.to_owned(),
+                        arch: TEST_ARCH_1.to_owned(),
+                    },
+                    CommitBuildInfo {
+                        prev_endtime_for_commit: None,
+                    },
+                )]
+                .into(),
+            };
+
+            let build_info = put_artifacts(
+                &mut context,
+                [(
+                    DEFAULT_BUILD_INFO.to_owned(),
+                    serde_yaml::to_vec(&build_info).unwrap(),
+                )]
+                .into(),
+            )
+            .await;
+
+            let mut generate_spec = JobSpec {
+                name: "generate".to_owned(),
+                script: vec!["generate-monitor tag".to_owned()],
+                dependencies: vec![build_info],
+                ..Default::default()
+            };
+
+            if test == Some(GenerateMonitorTimeoutLocation::Argument) {
+                use std::fmt::Write;
+                write!(
+                    &mut generate_spec.script[0],
+                    " --job-timeout '{TEST_MONITOR_TIMEOUT}'"
+                )
+                .unwrap();
+            }
+
+            let generate = enqueue_job(&context, generate_spec);
+
+            if test == Some(GenerateMonitorTimeoutLocation::HandlerOption) {
+                run_obs_handler_with_options(
+                    &mut context,
+                    HandlerOptions {
+                        default_monitor_job_timeout: Some(TEST_MONITOR_TIMEOUT.to_owned()),
+                        ..DEFAULT_HANDLER_OPTIONS
+                    },
+                )
+                .await;
+            } else {
+                run_obs_handler(&mut context).await;
+            }
+            assert_eq!(generate.state(), MockJobState::Success);
+
+            let results = get_job_artifacts(&generate);
+            let pipeline_yaml: serde_yaml::Value = assert_ok!(serde_yaml::from_slice(
+                results.get(DEFAULT_MONITOR_PIPELINE).unwrap()
+            ));
+            let pipeline_map = pipeline_yaml.as_mapping().unwrap();
+
+            let monitor_map = pipeline_map
+                .into_iter()
+                .next()
+                .unwrap()
+                .1
+                .as_mapping()
+                .unwrap();
+
+            let timeout_yaml = monitor_map.get(&"timeout".into());
+            if test.is_some() {
+                assert_eq!(
+                    timeout_yaml.unwrap().as_str().unwrap(),
+                    TEST_MONITOR_TIMEOUT
+                );
+            } else {
+                assert_none!(timeout_yaml);
+            }
         })
         .await;
     }

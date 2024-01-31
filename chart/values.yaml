@@ -6,6 +6,7 @@ replicaCount: 1
 
 log_level: info
 log_format: json
+default_monitor_job_timeout: ''
 gitlab:
   url: https://your.gitlab.server.org
   #Set the runner token for a first deployment. It's inherited on later

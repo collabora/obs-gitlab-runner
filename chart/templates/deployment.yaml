@@ -48,6 +48,10 @@ spec:
               value: {{ .Values.log_level | quote }}
             - name: OBS_RUNNER_LOG_FORMAT
               value: {{ .Values.log_format | quote }}
+            {{- if .Values.default_monitor_job_timeout }}
+            - name: OBS_RUNNER_DEFAULT_MONITOR_JOB_TIMEOUT
+              value: {{ .Values.default_monitor_job_timeout | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:

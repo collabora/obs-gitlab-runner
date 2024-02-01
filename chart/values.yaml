@@ -24,8 +24,8 @@ fullnameOverride: ""
 
 podAnnotations: {}
 
-podSecurityContext: {}
-  # fsGroup: 2000
+podSecurityContext:
+  fsGroup: 1001
 
 securityContext:
   capabilities:
@@ -34,7 +34,6 @@ securityContext:
   readOnlyRootFilesystem: true
   runAsNonRoot: true
   allowPrivilegeEscalation: false
-  fsGroup: 1001
   runAsUser: 1001
   runAsGroup: 1001
 

@@ -78,7 +78,6 @@ pub fn generate_monitor_pipeline(
             ("project", project.to_owned()),
             ("package", package.to_owned()),
             ("repository", repo.to_owned()),
-            ("arch", arch.to_owned()),
         ];
 
         let mut monitor_args = vec![
@@ -96,7 +95,9 @@ pub fn generate_monitor_pipeline(
         if let PipelineDownloadBinaries::OnSuccess { build_results_dir } =
             &options.download_binaries
         {
-            let mut download_args = vec![("build-results-dir", build_results_dir.clone())];
+            let mut download_args = vec![("build-results-dir", build_results_dir.clone()),
+                                        ("arch", arch.to_owned()),
+            ];
             download_args.extend_from_slice(&common_args);
             script.push(generate_command(
                 "download-binaries".to_owned(),

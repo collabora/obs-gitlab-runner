@@ -322,6 +322,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "349a06037c7bf932dd7e7d1f653678b2038b9ad46a74102f1fc7bd7872678cce"
 
 [[package]]
+name = "base16ct"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c7f02d4ea65f2c1853089ffd8d2787bdbc63de2f0d29dedbcf8ccdfa0ccd4cf"
+
+[[package]]
 name = "base64"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1711,7 +1717,7 @@ version = "0.1.8"
 dependencies = [
  "async-trait",
  "backoff",
- "base16ct",
+ "base16ct 0.2.0",
  "bytes",
  "camino",
  "claim",
@@ -1760,7 +1766,7 @@ name = "open-build-service-api"
 version = "0.1.0"
 source = "git+https://github.com/collabora/open-build-service-rs#1bb9a29e289aea1c8e5c6609a4f24cf5f43651ab"
 dependencies = [
- "base16ct",
+ "base16ct 0.1.1",
  "bytes",
  "chrono",
  "futures",
@@ -1778,7 +1784,7 @@ name = "open-build-service-mock"
 version = "0.1.0"
 source = "git+https://github.com/collabora/open-build-service-rs#1bb9a29e289aea1c8e5c6609a4f24cf5f43651ab"
 dependencies = [
- "base16ct",
+ "base16ct 0.1.1",
  "http-types",
  "md-5",
  "quick-xml",

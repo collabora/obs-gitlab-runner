@@ -39,7 +39,7 @@ open-build-service-api = { git = "https://github.com/collabora/open-build-servic
 
 [dev-dependencies]
 claim = "0.5"
-rstest = "0.12"
+rstest = "0.17"
 wiremock = "0.5"
 zip = "0.5"
 

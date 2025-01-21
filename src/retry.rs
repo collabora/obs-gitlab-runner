@@ -12,10 +12,10 @@ const INITIAL_INTERVAL: Duration = Duration::from_millis(300);
 fn is_client_error(err: &(dyn std::error::Error + 'static)) -> bool {
     err.downcast_ref::<reqwest::Error>()
         .and_then(|e| e.status())
-        .map_or(false, |status| status.is_client_error())
+        .is_some_and(|status| status.is_client_error())
         || err
             .downcast_ref::<obs::Error>()
-            .map_or(false, |err| matches!(err, obs::Error::ApiError(_)))
+            .is_some_and(|err| matches!(err, obs::Error::ApiError(_)))
 }
 
 fn is_caused_by_client_error(report: &Report) -> bool {
@@ -26,8 +26,7 @@ fn is_caused_by_client_error(report: &Report) -> bool {
             // source()), so we need to examine that error directly.
             || err
                 .downcast_ref::<std::io::Error>()
-                .and_then(|err| err.get_ref())
-                .map_or(false, |err| is_client_error(err))
+                .and_then(|err| err.get_ref()).is_some_and(|err| is_client_error(err))
     })
 }
 

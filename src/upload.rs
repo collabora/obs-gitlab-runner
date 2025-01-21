@@ -72,7 +72,7 @@ pub struct ObsDscUploader {
 }
 
 impl ObsDscUploader {
-    pub async fn prepare<'a>(
+    pub async fn prepare(
         client: obs::Client,
         mut project: String,
         branch_to: Option<String>,

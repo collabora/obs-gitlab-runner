@@ -7,6 +7,7 @@ use std::marker::PhantomData;
 #[derive(Debug)]
 pub struct FileEntry {
     pub hash: String,
+    #[allow(dead_code)]
     pub size: usize,
     pub filename: String,
 }

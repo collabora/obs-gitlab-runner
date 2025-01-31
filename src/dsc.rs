@@ -98,11 +98,50 @@ pub struct Dsc {
     pub files: Vec<FileEntry>,
 }
 
+pub fn discard_pgp(dsc: &[u8]) -> &[u8] {
+    const PGP_HEADER_START: &str = "-----BEGIN PGP SIGNED MESSAGE-----\n";
+    const PGP_HEADER_END: &str = "\n\n";
+    const PGP_FOOTER_START: &str = "-----BEGIN PGP SIGNATURE-----\n";
+
+    if let Ok(dsc_str) = std::str::from_utf8(dsc) {
+        if dsc_str.starts_with(PGP_HEADER_START) {
+            if let Some((_gpg_header, payload_and_sig)) = dsc_str.split_once(PGP_HEADER_END) {
+                if let Some((payload, _sig)) = payload_and_sig.split_once(PGP_FOOTER_START) {
+                    return payload.as_bytes();
+                }
+            }
+        }
+    }
+
+    dsc
+}
+
 #[cfg(test)]
 mod tests {
     use claim::*;
 
     use super::*;
+
+    const TEST_GPG_DSC: &str = "-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Source: abc
+SomeUnknownAttribute: 10
+Files:
+ hash1 10 file1
+ hash2 27 file2
+-----BEGIN PGP SIGNATURE-----
+
+iQEzBAEBCgAdFiEEQxKqmcM1tb5xMnn0axtijDBFQh4FAmebtGQACgkQaxtijDBF
+Qh6iAwf+NfOEM4+DbA8PPZnVz12bBqBNgMdaOx8CisQtd9xTmOMECaF3u2Vpfcha
+zWRVtVh7Js2UidlHEwdzVJuNwrkneBoIHJEyOd/X2EXI8hOlU71OJGCyx1fayDNp
+zf9Fe9kmlF9PJZRpB33YcTDSf5fYMNG2b4osa0ICOKssXoIbNVjaEPDdx3h/gsVm
+x/JPxsxWjuM98ALa3ncn4UUPrn4QQfbu73qFEKyOLqhjCZxb52LG5/w96bXQodPS
+Zhy+ZtJTpPJA9kuz9vZimQMPVimxUhYQQlBTl+3Bcg2Afw1X57H4MpkS+UPi16id
++DdRlEyxB4frFnYXK84u3VYR3Ml+8A==
+=wcHv
+-----END PGP SIGNATURE-----
+";
 
     const TEST_DSC: &str = "Source: abc
 SomeUnknownAttribute: 10
@@ -110,10 +149,7 @@ Files:
  hash1 10 file1
  hash2 27 file2";
 
-    #[test]
-    fn test_de() {
-        let dsc: Dsc = assert_ok!(rfc822_like::from_str(TEST_DSC));
-
+    fn assert_values(dsc: &Dsc) {
         assert_eq!(dsc.source, "abc");
         assert_eq!(dsc.files.len(), 2);
 
@@ -124,5 +160,19 @@ Files:
         assert_eq!(dsc.files[1].hash, "hash2");
         assert_eq!(dsc.files[1].size, 27);
         assert_eq!(dsc.files[1].filename, "file2");
+    }
+
+    #[test]
+    fn test_de() {
+        let dsc: Dsc = assert_ok!(rfc822_like::from_str(TEST_DSC));
+        assert_values(&dsc);
+    }
+
+    #[test]
+    fn test_gpg_de() {
+        let dsc: Dsc = assert_ok!(rfc822_like::from_bytes(discard_pgp(
+            TEST_GPG_DSC.as_bytes()
+        )));
+        assert_values(&dsc);
     }
 }

@@ -10,7 +10,7 @@ license = "MIT OR Apache-2.0"
 async-trait = "0.1"
 backoff = { version = "0.4", features = ["tokio"] }
 base16ct = { version = "0.1", features = ["std"] }
-bytes = "1.1"
+bytes = "1.9"
 camino = "1.0"
 clap = { version = "3.1", features = ["default", "derive", "env"] }
 color-eyre = "0.6"

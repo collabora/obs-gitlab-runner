@@ -806,7 +806,12 @@ mod tests {
                         tracing_subscriber::fmt::layer()
                             .with_test_writer()
                             .with_filter(
-                                Targets::new().with_target("obs_gitlab_runner", Level::TRACE),
+                                Targets::new()
+                                    .with_targets([
+                                        ("obs_gitlab_runner", Level::TRACE),
+                                        ("gitlab_runner", Level::DEBUG),
+                                    ])
+                                    .with_default(Level::WARN),
                             ),
                     )
                     .with(tracing_error::ErrorLayer::default())

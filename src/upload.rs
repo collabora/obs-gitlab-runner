@@ -8,7 +8,7 @@ use futures_util::{FutureExt, Stream, TryStreamExt};
 use gitlab_runner::outputln;
 use md5::{Digest, Md5};
 use open_build_service_api as obs;
-use tracing::{debug, info_span, instrument, trace, Instrument};
+use tracing::{debug, info_span, instrument, trace, warn, Instrument};
 
 use crate::{artifacts::ArtifactDirectory, dsc::Dsc, retry::retry_request};
 
@@ -280,7 +280,10 @@ impl ObsDscUploader {
                     return dir.rev.ok_or_else(|| eyre!("Revision is empty"));
                 }
                 obs::CommitResult::MissingEntries(missing) => {
-                    trace!("Retry commit, missing {} entries", missing.entries.len());
+                    trace!("Committing {} missing entries", missing.entries.len());
+                    if attempt > 0 {
+                        warn!("Commit attempt {}", attempt);
+                    }
                     debug!(?missing);
 
                     ensure!(

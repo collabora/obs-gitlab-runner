@@ -1,7 +1,8 @@
-use std::{collections::HashMap, fs::File};
+use std::{collections::HashMap, path::PathBuf};
 
 use color_eyre::eyre::{Context, Result};
 use serde::Serialize;
+use tempfile::NamedTempFile;
 use tracing::instrument;
 
 use crate::build_meta::{CommitBuildInfo, RepoArch};
@@ -61,7 +62,7 @@ pub fn generate_monitor_pipeline(
     srcmd5: &str,
     enabled_repos: &HashMap<RepoArch, CommitBuildInfo>,
     options: GeneratePipelineOptions,
-) -> Result<File> {
+) -> Result<PathBuf> {
     let rules: Option<serde_yaml::Sequence> = options
         .rules
         .as_deref()
@@ -129,8 +130,11 @@ pub fn generate_monitor_pipeline(
     }
 
     // TODO: check this blocking file write & any others
-    let mut file = tempfile::tempfile().wrap_err("Failed to create temp file")?;
-    serde_yaml::to_writer(&mut file, &jobs).wrap_err("Failed to serialize jobs")?;
+    // TODO: Should this just be a StringFile?, it's yaml, how big can it be?
+    //   We can't do that because the Job struct specifies TempFileArtifact
+    let mut temp_file = NamedTempFile::new().wrap_err("Failed to create temp file")?;
+    serde_yaml::to_writer(temp_file.as_file_mut(), &jobs).wrap_err("Failed to serialize jobs")?;
+    let (_file, path) = temp_file.keep()?;
 
-    Ok(file)
+    Ok(path)
 }

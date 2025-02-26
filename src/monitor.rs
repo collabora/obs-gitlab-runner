@@ -1,10 +1,11 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use color_eyre::eyre::{ensure, eyre, Context, Report, Result};
 use derivative::*;
 use futures_util::stream::StreamExt;
 use gitlab_runner::outputln;
 use open_build_service_api as obs;
+use tempfile::NamedTempFile;
 use tokio::{
     fs::File as AsyncFile,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
@@ -30,7 +31,7 @@ enum PackageBuildState {
 
 #[derive(Debug)]
 pub struct LogFile {
-    pub file: AsyncFile,
+    pub path: PathBuf,
     pub len: u64,
 }
 
@@ -246,10 +247,10 @@ impl ObsMonitor {
     pub async fn download_build_log(&self) -> Result<LogFile> {
         const LOG_LEN_TO_CHECK_FOR_MD5: u64 = 2500;
 
-        let mut file = retry_request(|| async {
-            let mut file = AsyncFile::from_std(
-                tempfile::tempfile().wrap_err("Failed to create tempfile to build log")?,
-            );
+        let (mut file, path) = retry_request(|| async {
+            let temp_file = NamedTempFile::new()?;
+            let (file, path) = temp_file.keep()?;
+            let mut file = AsyncFile::from_std(file);
             let mut stream = self
                 .client
                 .project(self.package.project.clone())
@@ -264,7 +265,7 @@ impl ObsMonitor {
                     .wrap_err("Failed to download build log")?;
             }
 
-            Ok::<AsyncFile, Report>(file)
+            Ok::<(AsyncFile, PathBuf), Report>((file, path))
         })
         .await?;
 
@@ -280,8 +281,7 @@ impl ObsMonitor {
             .wrap_err("Failed to read start of logs")?;
         self.check_log_md5(&String::from_utf8_lossy(&buf))?;
 
-        file.rewind().await.wrap_err("Failed to rewind file")?;
-        Ok(LogFile { file, len })
+        Ok(LogFile { path, len })
     }
 }
 
@@ -429,11 +429,14 @@ mod tests {
             },
         );
 
-        let mut log_file = assert_ok!(monitor.download_build_log().await);
+        let log_file = assert_ok!(monitor.download_build_log().await);
         assert_eq!(log_file.len, log_content.len() as u64);
 
         let mut log = "".to_owned();
-        assert_ok!(log_file.file.read_to_string(&mut log).await);
+        let mut file = AsyncFile::open(log_file.path)
+            .await
+            .expect("Failed to open log file");
+        assert_ok!(file.read_to_string(&mut log).await);
         assert_eq!(log, log_content);
 
         let new_srcmd5 = random_md5();

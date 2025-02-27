@@ -12,7 +12,7 @@ use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::{eyre, Context, Result};
 use derivative::*;
-use futures_util::{AsyncRead, StreamExt};
+use futures_util::{io::Cursor, AsyncRead, StreamExt};
 use gitlab_runner::{
     job::{Dependency, Job, Variable},
     outputln, JobHandler, JobResult, Phase, UploadableFile,
@@ -21,11 +21,8 @@ use open_build_service_api as obs;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 use tokio::{fs::File as AsyncFile, io::AsyncSeekExt};
-use tokio_util::{
-    compat::TokioAsyncReadCompatExt,
-    io::ReaderStream,
-};
-use tracing::{debug, error, instrument};
+use tokio_util::{compat::TokioAsyncReadCompatExt, io::ReaderStream};
+use tracing::{debug, error, instrument, warn};
 
 use crate::{
     artifacts::{save_to_tempfile, ArtifactDirectory},
@@ -182,69 +179,64 @@ struct ObsBuildInfo {
 }
 
 #[derive(Clone, Debug)]
-pub struct StringFile {
+pub struct ObsArtifact {
     path: String,
-    content: String,
+    inner: ObsArtifactInner,
+}
+
+#[derive(Clone, Debug)]
+enum ObsArtifactInner {
+    File(PathBuf),
+    String(String),
+}
+
+impl ObsArtifact {
+    fn new_file(path: String, real_path: PathBuf) -> Self {
+        Self {
+            path,
+            inner: ObsArtifactInner::File(real_path),
+        }
+    }
+
+    fn new_string(path: String, string: String) -> Self {
+        Self {
+            path,
+            inner: ObsArtifactInner::String(string),
+        }
+    }
 }
 
 // To avoid duplicate files for HashSet of artifacts match and hash paths only
-impl PartialEq for StringFile {
+impl PartialEq for ObsArtifact {
     fn eq(&self, other: &Self) -> bool {
         self.path == other.path
     }
 }
-impl Eq for StringFile {}
+impl Eq for ObsArtifact {}
 
-impl Hash for StringFile {
+impl Hash for ObsArtifact {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.path.hash(state);
     }
 }
 
 #[async_trait]
-impl UploadableFile for StringFile {
-    type Data<'a> = &'a [u8];
-
-    fn get_path(&self) -> Cow<'_, str> {
-        self.path.clone().into()
-    }
-
-    async fn get_data(&self) -> Result<Self::Data<'_>, ()> {
-        Ok(self.content.as_bytes())
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PathArtifact {
-    pub real_path: PathBuf,
-    pub path: String,
-}
-
-impl PartialEq for PathArtifact {
-    fn eq(&self, other: &Self) -> bool {
-        self.path == other.path
-    }
-}
-
-impl Eq for PathArtifact {}
-
-impl Hash for PathArtifact {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.path.hash(state);
-    }
-}
-
-#[async_trait]
-impl UploadableFile for PathArtifact {
+impl UploadableFile for ObsArtifact {
     type Data<'a> = Box<dyn AsyncRead + Send + Unpin>;
 
     fn get_path(&self) -> Cow<'_, str> {
-        self.path.clone().into()
+        (&self.path).into()
     }
 
     async fn get_data(&self) -> Result<Self::Data<'_>, ()> {
-        let file = AsyncFile::open(&self.real_path).await.map_err(|_| {})?;
-        Ok(Box::new(file.compat()))
+        use ObsArtifactInner::*;
+        match &self.inner {
+            File(path) => {
+                let file = AsyncFile::open(path).await.map_err(|_| {})?;
+                Ok(Box::new(file.compat()))
+            }
+            String(data) => Ok(Box::new(Cursor::new(data.to_owned()))),
+        }
     }
 }
 
@@ -295,7 +287,7 @@ pub struct ObsJobHandler {
     options: HandlerOptions,
 
     script_failed: bool,
-    artifacts: HashSet<PathArtifact>,
+    artifacts: HashSet<ObsArtifact>,
 }
 
 impl ObsJobHandler {
@@ -383,10 +375,10 @@ impl ObsJobHandler {
         let build_info_2 = build_info.clone();
         let build_info_path = tokio::task::spawn_blocking(move || build_info_2.save()).await??;
 
-        self.artifacts.replace(PathArtifact {
-            path: args.build_info_out.clone(),
-            real_path: build_info_path,
-        });
+        self.artifacts.replace(ObsArtifact::new_file(
+            args.build_info_out.clone(),
+            build_info_path,
+        ));
 
         let initial_build_meta = BuildMeta::get_if_package_exists(
             self.client.clone(),
@@ -463,10 +455,8 @@ impl ObsJobHandler {
         debug!("Saving complete build info: {:?}", build_info);
 
         let build_info_path = tokio::task::spawn_blocking(move || build_info.save()).await??;
-        self.artifacts.replace(PathArtifact {
-            path: args.build_info_out.clone(),
-            real_path: build_info_path,
-        });
+        self.artifacts
+            .replace(ObsArtifact::new_file(args.build_info_out, build_info_path));
 
         Ok(())
     }
@@ -477,7 +467,7 @@ impl ObsJobHandler {
         let build_info: ObsBuildInfo = serde_yaml::from_slice(&build_info_data[..])
             .wrap_err("Failed to parse provided build info file")?;
 
-        let path = generate_monitor_pipeline(
+        let job_yaml = generate_monitor_pipeline(
             &build_info.project,
             &build_info.package,
             &build_info
@@ -505,10 +495,9 @@ impl ObsJobHandler {
                 build_log_out: args.build_log_out.to_string(),
             },
         )?;
-        self.artifacts.replace(PathArtifact {
-            path: args.pipeline_out.clone(),
-            real_path: path,
-        });
+
+        self.artifacts
+            .replace(ObsArtifact::new_string(args.pipeline_out.clone(), job_yaml));
 
         outputln!("Wrote pipeline file '{}'.", args.pipeline_out);
 
@@ -536,10 +525,10 @@ impl ObsJobHandler {
         debug!("Completed with: {:?}", completion);
 
         let log_file = monitor.download_build_log().await?;
-        self.artifacts.replace(PathArtifact {
-            path: args.build_log_out.clone(),
-            real_path: log_file.path.clone(),
-        });
+        self.artifacts.replace(ObsArtifact::new_file(
+            args.build_log_out.clone(),
+            log_file.path.clone(),
+        ));
 
         match completion {
             PackageCompletion::Succeeded => {
@@ -595,9 +584,11 @@ impl ObsJobHandler {
         let binary_count = binaries.len();
 
         self.artifacts
-            .extend(binaries.into_iter().map(|(path, real_path)| PathArtifact {
-                path: args.build_results_dir.join(path).to_string(),
-                real_path,
+            .extend(binaries.into_iter().map(|(path, real_path)| {
+                ObsArtifact::new_file(
+                    args.build_results_dir.join(path).to_string(),
+                    real_path.clone(),
+                )
             }));
 
         outputln!("Downloaded {} artifact(s).", binary_count);
@@ -683,7 +674,7 @@ impl ObsJobHandler {
 }
 
 #[async_trait]
-impl JobHandler<PathArtifact> for ObsJobHandler {
+impl JobHandler<ObsArtifact> for ObsJobHandler {
     async fn step(&mut self, script: &[String], _phase: Phase) -> JobResult {
         for command in script {
             if let Err(err) = self.command(command).await {
@@ -703,7 +694,7 @@ impl JobHandler<PathArtifact> for ObsJobHandler {
 
     async fn get_uploadable_files(
         &mut self,
-    ) -> Result<Box<dyn Iterator<Item = PathArtifact> + Send>, ()> {
+    ) -> Result<Box<dyn Iterator<Item = ObsArtifact> + Send>, ()> {
         Ok(Box::new(self.artifacts.clone().into_iter()))
     }
 }
@@ -733,13 +724,38 @@ async fn check_for_artifact(dep: Dependency<'_>, filename: &str) -> Result<Optio
 
 #[async_trait]
 impl ArtifactDirectory for ObsJobHandler {
-    type Reader = File;
+    type Reader<'a> = Box<dyn std::io::Read + Send + 'a>;
 
     #[instrument(skip(self))]
+    async fn get_or_none(&self, filename: &str) -> Result<Option<Self::Reader<'_>>> {
+        if let Some(artifact) = self.artifacts.iter().find(|&a| a.path == filename) {
+            match &artifact.inner {
+                ObsArtifactInner::File(path) => return Ok(Some(Box::new(File::open(path)?))),
+                ObsArtifactInner::String(data) => {
+                    return Ok(Some(Box::new(std::io::Cursor::new(data.as_bytes()))));
+                }
+            }
+        }
+
+        for dep in self.job.dependencies() {
+            if let Some(file) = check_for_artifact(dep, filename).await? {
+                return Ok(Some(Box::new(file.try_into_std().unwrap())));
+            }
+        }
+
+        Ok(None)
+    }
+
     async fn get_file_or_none(&self, filename: &str) -> Result<Option<AsyncFile>> {
-        if let Some(artifact) = self.artifacts.iter().find(|a| a.path == filename) {
-            let file = AsyncFile::open(&artifact.real_path).await?;
-            return Ok(Some(file));
+        if let Some(artifact) = self.artifacts.iter().find(|&a| a.path == filename) {
+            match &artifact.inner {
+                ObsArtifactInner::File(path) => return Ok(Some(AsyncFile::open(path).await?)),
+                ObsArtifactInner::String(data) => {
+                    return Ok(Some(AsyncFile::from_std(save_to_tempfile(
+                        &mut data.as_bytes(),
+                    )?)));
+                }
+            }
         }
 
         for dep in self.job.dependencies() {
@@ -749,14 +765,6 @@ impl ArtifactDirectory for ObsJobHandler {
         }
 
         Ok(None)
-    }
-
-    #[instrument(skip(self))]
-    async fn get_or_none(&self, filename: &str) -> Result<Option<Self::Reader>> {
-        Ok(self
-            .get_file_or_none(filename)
-            .await?
-            .map(|f| f.try_into_std().unwrap()))
     }
 }
 
@@ -1016,10 +1024,10 @@ mod tests {
         let test1_file = "test1";
         let test1_contents = b"123";
         let test1_md5 = compute_md5(test1_contents);
-        let test1 = StringFile {
-            path: test1_file.to_owned(),
-            content: String::from_utf8(test1_contents.into()).unwrap(),
-        };
+        let test1 = ObsArtifact::new_string(
+            test1_file.to_owned(),
+            std::str::from_utf8(test1_contents).unwrap().to_owned(),
+        );
 
         let dsc1_file = "test1.dsc";
         let dsc1_contents = format!(
@@ -1030,18 +1038,12 @@ mod tests {
             test1_file
         );
         let dsc1_md5 = compute_md5(dsc1_contents.as_bytes());
-        let dsc1 = StringFile {
-            path: dsc1_file.to_owned(),
-            content: dsc1_contents.clone(),
-        };
+        let dsc1 = ObsArtifact::new_string(dsc1_file.to_owned(), dsc1_contents.clone());
 
         let dsc1_bad_file = "test1-bad.dsc";
         let dsc1_bad_contents =
             dsc1_contents.replace(test1_file, &(test1_file.to_owned() + ".missing"));
-        let dsc1_bad = StringFile {
-            path: dsc1_bad_file.to_owned(),
-            content: dsc1_bad_contents,
-        };
+        let dsc1_bad = ObsArtifact::new_string(dsc1_bad_file.to_owned(), dsc1_bad_contents);
 
         context.obs_mock.add_project(TEST_PROJECT.to_owned());
 
@@ -1916,10 +1918,10 @@ mod tests {
 
             let build_info = put_artifacts(
                 &mut context,
-                [StringFile {
-                    path: DEFAULT_BUILD_INFO.to_owned(),
-                    content: serde_yaml::to_string(&build_info).unwrap(),
-                }]
+                [ObsArtifact::new_string(
+                    DEFAULT_BUILD_INFO.to_owned(),
+                    serde_yaml::to_string(&build_info).unwrap(),
+                )]
                 .into(),
             )
             .await;

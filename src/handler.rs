@@ -229,13 +229,13 @@ impl UploadableFile for ObsArtifact {
     }
 
     async fn get_data(&self) -> Result<Self::Data<'_>, ()> {
-        use ObsArtifactInner::*;
+        use ObsArtifactInner as Inner;
         match &self.inner {
-            File(path) => {
+            Inner::File(path) => {
                 let file = AsyncFile::open(path).await.map_err(|_| {})?;
                 Ok(Box::new(file.compat()))
             }
-            String(data) => Ok(Box::new(Cursor::new(data.to_owned()))),
+            Inner::String(data) => Ok(Box::new(Cursor::new(data.to_owned()))),
         }
     }
 }
@@ -729,9 +729,10 @@ impl ArtifactDirectory for ObsJobHandler {
     #[instrument(skip(self))]
     async fn get_or_none(&self, filename: &str) -> Result<Option<Self::Reader<'_>>> {
         if let Some(artifact) = self.artifacts.iter().find(|&a| a.path == filename) {
+            use ObsArtifactInner as Inner;
             match &artifact.inner {
-                ObsArtifactInner::File(path) => return Ok(Some(Box::new(File::open(path)?))),
-                ObsArtifactInner::String(data) => {
+                Inner::File(path) => return Ok(Some(Box::new(File::open(path)?))),
+                Inner::String(data) => {
                     return Ok(Some(Box::new(std::io::Cursor::new(data.as_bytes()))));
                 }
             }
@@ -748,9 +749,10 @@ impl ArtifactDirectory for ObsJobHandler {
 
     async fn get_file_or_none(&self, filename: &str) -> Result<Option<AsyncFile>> {
         if let Some(artifact) = self.artifacts.iter().find(|&a| a.path == filename) {
+            use ObsArtifactInner as Inner;
             match &artifact.inner {
-                ObsArtifactInner::File(path) => return Ok(Some(AsyncFile::open(path).await?)),
-                ObsArtifactInner::String(data) => {
+                Inner::File(path) => return Ok(Some(AsyncFile::open(path).await?)),
+                Inner::String(data) => {
                     return Ok(Some(AsyncFile::from_std(save_to_tempfile(
                         &mut data.as_bytes(),
                     )?)));
@@ -779,7 +781,7 @@ mod tests {
 
     use camino::Utf8Path;
     use claim::*;
-    use gitlab_runner::Runner;
+    use gitlab_runner::{GitlabLayer, Runner, RunnerBuilder};
     use gitlab_runner_mock::*;
     use open_build_service_mock::*;
     use rstest::rstest;
@@ -828,11 +830,15 @@ mod tests {
 
         let runner_dir = tempfile::tempdir().unwrap();
         let gitlab_mock = GitlabRunnerMock::start().await;
-        let (runner, layer) = Runner::new_with_layer(
+        let (layer, jobs) = GitlabLayer::new();
+        let runner = RunnerBuilder::new(
             gitlab_mock.uri(),
             gitlab_mock.runner_token().to_owned(),
             runner_dir.path().to_owned(),
-        );
+            jobs,
+        )
+        .build()
+        .await;
 
         let obs_mock = create_default_mock().await;
         let obs_client = create_default_client(&obs_mock);

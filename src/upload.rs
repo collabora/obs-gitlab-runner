@@ -10,7 +10,11 @@ use md5::{Digest, Md5};
 use open_build_service_api as obs;
 use tracing::{debug, info_span, instrument, trace, Instrument};
 
-use crate::{artifacts::ArtifactDirectory, dsc::Dsc, retry::retry_request};
+use crate::{
+    artifacts::ArtifactDirectory,
+    dsc::{discard_pgp, Dsc},
+    retry::retry_request,
+};
 
 type Md5String = String;
 
@@ -83,8 +87,8 @@ impl ObsDscUploader {
             .get_data(dsc_path.as_str())
             .await
             .wrap_err("Failed to download dsc")?;
-        let dsc: Dsc =
-            rfc822_like::from_bytes(&dsc_contents[..]).wrap_err("Failed to parse dsc")?;
+        let dsc: Dsc = rfc822_like::from_str(discard_pgp(std::str::from_utf8(&dsc_contents[..])?))
+            .wrap_err("Failed to parse dsc")?;
 
         let package = dsc.source.to_owned();
 
@@ -191,7 +195,8 @@ impl ObsDscUploader {
                 .await?;
 
                 let _span = info_span!("find_files_to_remove:parse", %file);
-                let dsc: Dsc = rfc822_like::from_bytes(&contents[..])?;
+                let dsc: Dsc =
+                    rfc822_like::from_str(discard_pgp(std::str::from_utf8(&contents[..])?))?;
 
                 to_remove.extend(dsc.files.into_iter().map(|f| f.filename));
             } else if file.ends_with(".changes") {

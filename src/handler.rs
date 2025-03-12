@@ -4,7 +4,7 @@ use std::{
     fs::File,
     hash::{Hash, Hasher},
     io::SeekFrom,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use async_trait::async_trait;
@@ -19,7 +19,6 @@ use gitlab_runner::{
 };
 use open_build_service_api as obs;
 use serde::{Deserialize, Serialize};
-use tempfile::NamedTempFile;
 use tokio::{fs::File as AsyncFile, io::AsyncSeekExt};
 use tokio_util::{compat::TokioAsyncReadCompatExt, io::ReaderStream};
 use tracing::{debug, error, instrument, warn};
@@ -248,9 +247,12 @@ impl ObsBuildInfo {
         serde_yaml::to_string(self)
     }
     #[instrument]
-    fn save(&self) -> Result<PathBuf> {
-        let mut temp_file =
-            NamedTempFile::new().wrap_err("Failed to create file for build info")?;
+    fn save(&self, dir: &Path) -> Result<PathBuf> {
+        let mut temp_file = tempfile::Builder::new()
+            .prefix("obs-glr-build-info-")
+            .suffix(".yml")
+            .tempfile_in(dir)
+            .wrap_err("Failed to create file for build info")?;
         serde_yaml::to_writer(temp_file.as_file_mut(), self)
             .wrap_err("Failed to write build yaml to file")?;
         let (_file, path) = temp_file
@@ -529,7 +531,7 @@ impl ObsJobHandler {
         debug!("Completed with: {:?}", completion);
 
         // TODO: Download log file to string
-        let log_file = monitor.download_build_log().await?;
+        let log_file = monitor.download_build_log(self.job.build_dir()).await?;
         self.artifacts.replace(ObsArtifact::new_file(
             args.build_log_out.clone(),
             log_file.path.clone(),
@@ -580,6 +582,7 @@ impl ObsJobHandler {
     async fn run_download_binaries(&mut self, args: DownloadBinariesAction) -> Result<()> {
         let binaries = download_binaries(
             self.client.clone(),
+            self.job.build_dir(),
             &args.project,
             &args.package,
             &args.repository,

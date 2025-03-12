@@ -1,11 +1,13 @@
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use color_eyre::eyre::{ensure, eyre, Context, Report, Result};
 use derivative::*;
 use futures_util::stream::StreamExt;
 use gitlab_runner::outputln;
 use open_build_service_api as obs;
-use tempfile::NamedTempFile;
 use tokio::{
     fs::File as AsyncFile,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
@@ -244,11 +246,14 @@ impl ObsMonitor {
     }
 
     #[instrument]
-    pub async fn download_build_log(&self) -> Result<LogFile> {
+    pub async fn download_build_log(&self, dir: &Path) -> Result<LogFile> {
         const LOG_LEN_TO_CHECK_FOR_MD5: u64 = 2500;
 
         let (mut file, path) = retry_request(|| async {
-            let temp_file = NamedTempFile::new()?;
+            let temp_file = tempfile::Builder::new()
+                .prefix("obs-glr-build-log-")
+                .suffix(".txt")
+                .tempfile_in(dir)?;
             let (file, path) = temp_file.keep()?;
             let mut file = AsyncFile::from_std(file);
             let mut stream = self
@@ -372,6 +377,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_download_log() {
+        let build_dir = tempfile::Builder::new()
+            .prefix("obs-glr-test-mon-")
+            .tempdir()
+            .unwrap();
         let srcmd5 = random_md5();
         let log_content = format!(
             "srcmd5 '{}'\n
@@ -429,7 +438,7 @@ mod tests {
             },
         );
 
-        let log_file = assert_ok!(monitor.download_build_log().await);
+        let log_file = assert_ok!(monitor.download_build_log(build_dir.path()).await);
         assert_eq!(log_file.len, log_content.len() as u64);
 
         let mut log = "".to_owned();
@@ -451,7 +460,7 @@ mod tests {
             true,
         );
 
-        let err = assert_err!(monitor.download_build_log().await);
+        let err = assert_err!(monitor.download_build_log(build_dir.path()).await);
         assert!(err.to_string().contains("unavailable"));
     }
 

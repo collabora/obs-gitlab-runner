@@ -1,9 +1,12 @@
-use std::{collections::HashMap, io, path::PathBuf};
+use std::{
+    collections::HashMap,
+    io,
+    path::{Path, PathBuf},
+};
 
 use color_eyre::eyre::{Report, Result, WrapErr};
 use futures_util::TryStreamExt;
 use open_build_service_api as obs;
-use tempfile::NamedTempFile;
 use tokio::fs::File as AsyncFile;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{info_span, instrument, Instrument};
@@ -13,6 +16,7 @@ use crate::retry::retry_request;
 #[instrument(skip(client))]
 pub async fn download_binaries(
     client: obs::Client,
+    build_dir: &Path,
     project: &str,
     package: &str,
     repository: &str,
@@ -33,7 +37,11 @@ pub async fn download_binaries(
             let binary = binary.clone();
             let client = client.clone();
             async move {
-                let (file, path) = NamedTempFile::new()?.keep()?;
+                let (file, path) = tempfile::Builder::new()
+                    .prefix("obs-glr-")
+                    .suffix(".bin")
+                    .tempfile_in(build_dir)?
+                    .keep()?;
 
                 let stream = client
                     .project(project.to_owned())
@@ -77,6 +85,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_results() {
+        let build_dir = tempfile::Builder::new()
+            .prefix("obs-glr-test-bin-")
+            .tempdir()
+            .unwrap();
         let test_file = "test.bin";
         let test_contents = "123980238";
 
@@ -113,7 +125,15 @@ mod tests {
         let client = create_default_client(&mock);
 
         let mut binaries = assert_ok!(
-            download_binaries(client, TEST_PROJECT, TEST_PACKAGE_1, TEST_REPO, TEST_ARCH_1).await
+            download_binaries(
+                client,
+                build_dir.path(),
+                TEST_PROJECT,
+                TEST_PACKAGE_1,
+                TEST_REPO,
+                TEST_ARCH_1
+            )
+            .await
         );
         assert_eq!(binaries.len(), 1);
 

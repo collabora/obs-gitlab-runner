@@ -24,28 +24,31 @@ pub async fn async_save_to_tempfile<R: Read + Send + 'static>(mut reader: R) -> 
 
 #[async_trait]
 pub trait ArtifactDirectory: Send + Sync {
-    type Reader: Read + Send + 'static;
+    type Reader<'a>: Read + Send
+    where
+        Self: 'a;
 
-    async fn get_or_none(&self, filename: &str) -> Result<Option<Self::Reader>>;
+    async fn get_or_none(&self, filename: &str) -> Result<Option<Self::Reader<'_>>>;
 
-    async fn get(&self, filename: &str) -> Result<Self::Reader> {
+    async fn get(&self, filename: &str) -> Result<Self::Reader<'_>> {
         self.get_or_none(filename)
             .await?
             .ok_or_else(|| eyre!("Could not find artifact '{}'", filename))
     }
 
     async fn get_file_or_none(&self, filename: &str) -> Result<Option<AsyncFile>> {
-        let reader = self.get_or_none(filename).await?;
-        Ok(if let Some(reader) = reader {
-            Some(async_save_to_tempfile(reader).await?)
+        let mut reader = self.get_or_none(filename).await?;
+        Ok(if let Some(reader) = &mut reader {
+            Some(AsyncFile::from_std(save_to_tempfile(reader)?))
         } else {
             None
         })
     }
 
     async fn get_file(&self, filename: &str) -> Result<AsyncFile> {
-        let reader = self.get(filename).await?;
-        async_save_to_tempfile(reader).await
+        self.get_file_or_none(filename)
+            .await?
+            .ok_or_else(|| eyre!("Could not find artifact '{}'", filename))
     }
 
     async fn get_data_or_none(&self, filename: &str) -> Result<Option<Vec<u8>>> {
@@ -98,9 +101,9 @@ pub mod test_support {
 
     #[async_trait]
     impl ArtifactDirectory for MockArtifactDirectory {
-        type Reader = MockArtifactReader;
+        type Reader<'a> = MockArtifactReader;
 
-        async fn get_or_none(&self, filename: &str) -> Result<Option<Self::Reader>> {
+        async fn get_or_none(&self, filename: &str) -> Result<Option<Self::Reader<'_>>> {
             Ok(self
                 .artifacts
                 .get(filename)

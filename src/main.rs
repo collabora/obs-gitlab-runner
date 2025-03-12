@@ -2,7 +2,7 @@ use std::{fmt, str::FromStr, sync::Arc};
 
 use clap::Parser;
 use color_eyre::eyre::Result;
-use gitlab_runner::Runner;
+use gitlab_runner::{GitlabLayer, RunnerBuilder};
 use strum::{Display, EnumString};
 use tracing::{error, info, Subscriber};
 use tracing_subscriber::{
@@ -106,8 +106,10 @@ where
 async fn main() {
     let args = Args::parse();
     let temp = tempfile::tempdir().expect("Failed to create temporary directory");
-    let (mut runner, layer) =
-        Runner::new_with_layer(args.server, args.token, temp.path().to_owned());
+    let (layer, jobs) = GitlabLayer::new();
+    let mut runner = RunnerBuilder::new(args.server, args.token, temp.path().to_owned(), jobs)
+        .build()
+        .await;
 
     let registry = tracing_subscriber::registry()
         .with(tracing_error::ErrorLayer::default())

@@ -1,9 +1,13 @@
-use std::{collections::HashMap, io};
+use std::{
+    collections::HashMap,
+    io,
+    path::{Path, PathBuf},
+};
 
 use color_eyre::eyre::{Report, Result, WrapErr};
 use futures_util::TryStreamExt;
 use open_build_service_api as obs;
-use tokio::{fs::File as AsyncFile, io::AsyncSeekExt};
+use tokio::fs::File as AsyncFile;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{info_span, instrument, Instrument};
 
@@ -12,11 +16,12 @@ use crate::retry::retry_request;
 #[instrument(skip(client))]
 pub async fn download_binaries(
     client: obs::Client,
+    build_dir: &Path,
     project: &str,
     package: &str,
     repository: &str,
     arch: &str,
-) -> Result<HashMap<String, AsyncFile>> {
+) -> Result<HashMap<String, PathBuf>> {
     let binary_list = retry_request(|| async {
         client
             .project(project.to_owned())
@@ -28,13 +33,15 @@ pub async fn download_binaries(
     let mut binaries = HashMap::new();
 
     for binary in binary_list.binaries {
-        let mut dest = retry_request(|| {
+        let path = retry_request(|| {
             let binary = binary.clone();
             let client = client.clone();
             async move {
-                let mut dest = AsyncFile::from_std(
-                    tempfile::tempfile().wrap_err("Failed to create temporary file")?,
-                );
+                let (file, path) = tempfile::Builder::new()
+                    .prefix("obs-glr-")
+                    .suffix(".bin")
+                    .tempfile_in(build_dir)?
+                    .keep()?;
 
                 let stream = client
                     .project(project.to_owned())
@@ -48,20 +55,17 @@ pub async fn download_binaries(
                         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
                         .into_async_read()
                         .compat(),
-                    &mut dest,
+                    &mut AsyncFile::from_std(file),
                 )
                 .await
                 .wrap_err("Failed to download file")?;
-                Ok::<AsyncFile, Report>(dest)
+                Ok::<PathBuf, Report>(path)
             }
         })
         .instrument(info_span!("download_binaries:download", ?binary))
         .await?;
 
-        dest.rewind()
-            .instrument(info_span!("download_binaries:rewind", ?binary))
-            .await?;
-        binaries.insert(binary.filename, dest);
+        binaries.insert(binary.filename, path);
     }
 
     Ok(binaries)
@@ -81,6 +85,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_results() {
+        let build_dir = tempfile::Builder::new()
+            .prefix("obs-glr-test-bin-")
+            .tempdir()
+            .unwrap();
         let test_file = "test.bin";
         let test_contents = "123980238";
 
@@ -117,13 +125,27 @@ mod tests {
         let client = create_default_client(&mock);
 
         let mut binaries = assert_ok!(
-            download_binaries(client, TEST_PROJECT, TEST_PACKAGE_1, TEST_REPO, TEST_ARCH_1).await
+            download_binaries(
+                client,
+                build_dir.path(),
+                TEST_PROJECT,
+                TEST_PACKAGE_1,
+                TEST_REPO,
+                TEST_ARCH_1
+            )
+            .await
         );
         assert_eq!(binaries.len(), 1);
 
         let binary = assert_some!(binaries.get_mut(test_file));
         let mut contents = String::new();
-        assert_ok!(binary.read_to_string(&mut contents).await);
+        assert_ok!(
+            AsyncFile::open(binary)
+                .await
+                .unwrap()
+                .read_to_string(&mut contents)
+                .await
+        );
         assert_eq!(contents, test_contents);
     }
 }

@@ -49,9 +49,9 @@ trait FlagSupportingExplicitValue {
     fn flag_supporting_explicit_value(self) -> Self;
 }
 
-impl FlagSupportingExplicitValue for clap::Arg<'_> {
+impl FlagSupportingExplicitValue for clap::Arg {
     fn flag_supporting_explicit_value(self) -> Self {
-        self.min_values(0)
+        self.num_args(0..=1)
             .require_equals(true)
             .required(false)
             .default_value("false")
@@ -67,7 +67,7 @@ struct DputAction {
     branch_to: String,
     #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned())]
     build_info_out: String,
-    #[clap(long, parse(try_from_str), flag_supporting_explicit_value())]
+    #[clap(long, flag_supporting_explicit_value())]
     rebuild_if_unchanged: bool,
 }
 
@@ -130,9 +130,9 @@ struct DownloadBinariesAction {
 struct PruneAction {
     #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned())]
     build_info: String,
-    #[clap(long, parse(try_from_str), flag_supporting_explicit_value())]
+    #[clap(long, flag_supporting_explicit_value())]
     ignore_missing_build_info: bool,
-    #[clap(long, parse(try_from_str), flag_supporting_explicit_value())]
+    #[clap(long, flag_supporting_explicit_value())]
     only_if_job_unsuccessful: bool,
 }
 
@@ -140,9 +140,9 @@ struct PruneAction {
 #[derive(Parser, Debug)]
 struct EchoAction {
     args: Vec<String>,
-    #[clap(long, parse(try_from_str), flag_supporting_explicit_value())]
+    #[clap(long, flag_supporting_explicit_value())]
     fail: bool,
-    #[clap(long, parse(try_from_str), flag_supporting_explicit_value())]
+    #[clap(long, flag_supporting_explicit_value())]
     uppercase: bool,
     #[clap(long, default_value = " ")]
     sep: String,

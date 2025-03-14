@@ -31,6 +31,7 @@ mod upload;
 #[cfg(test)]
 mod test_support;
 
+#[derive(Clone)]
 struct TargetsArg {
     targets: Targets,
     parsed_from: String,
@@ -59,7 +60,7 @@ impl fmt::Display for TargetsArg {
     }
 }
 
-#[derive(Display, EnumString)]
+#[derive(Display, EnumString, Clone)]
 #[strum(serialize_all = "lowercase")]
 enum LogFormat {
     Pretty,
@@ -86,7 +87,7 @@ struct Args {
     log: TargetsArg,
     #[clap(long, env = "OBS_RUNNER_LOG_FORMAT", default_value_t = LogFormat::Pretty)]
     log_format: LogFormat,
-    #[clap(long, env = "OBS_RUNNER_MAX_JOBS", default_value_t = 64, parse(try_from_str=parse_max_jobs))]
+    #[clap(long, env = "OBS_RUNNER_MAX_JOBS", default_value_t = 64, value_parser = parse_max_jobs)]
     max_jobs: usize,
     #[clap(long, env = "OBS_RUNNER_DEFAULT_MONITOR_JOB_TIMEOUT")]
     default_monitor_job_timeout: Option<String>,

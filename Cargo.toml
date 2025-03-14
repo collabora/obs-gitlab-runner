@@ -12,7 +12,7 @@ backoff = { version = "0.4", features = ["tokio"] }
 base16ct = { version = "0.1", features = ["std"] }
 bytes = "1.1"
 camino = "1.0"
-clap = { version = "3.1", features = ["default", "derive", "env"] }
+clap = { version = "4.5", features = ["default", "derive", "env"] }
 color-eyre = "0.6"
 derivative = "2.2"
 futures-util = "0.3"

@@ -7,7 +7,7 @@ use derivative::*;
 use futures_util::{FutureExt, Stream, TryStreamExt};
 use gitlab_runner::outputln;
 use md5::{Digest, Md5};
-use open_build_service_api as obs;
+use open_build_service_api::{self as obs, BuildTarget, PackageModifier};
 use tracing::{debug, info_span, instrument, trace, warn, Instrument};
 
 use crate::{artifacts::ArtifactDirectory, dsc::Dsc, retry::retry_request};
@@ -78,6 +78,7 @@ impl ObsDscUploader {
         branch_to: Option<String>,
         dsc_path: Utf8PathBuf,
         artifacts: &impl ArtifactDirectory,
+        enabled_repos: &Option<Vec<String>>,
     ) -> Result<ObsDscUploader> {
         let dsc_contents = artifacts
             .get_data(dsc_path.as_str())
@@ -106,9 +107,12 @@ impl ObsDscUploader {
                 ..Default::default()
             };
 
+            let client_project = client.project(project.clone());
             let client_package = client.project(project.clone()).package(package.clone());
 
+            outputln!("starting branch");
             let result = retry_request(|| async { client_package.branch(&options).await }).await;
+            outputln!("done {:?}", result);
             if let Err(err) = result {
                 match err.downcast_ref::<obs::Error>() {
                     Some(obs::Error::ApiError(e)) if e.code == "not_missing" => {
@@ -121,7 +125,27 @@ impl ObsDscUploader {
                 }
             }
 
+            let original_project_meta = client_project.meta().await?;
+            let original_package_meta = client_package.meta().await?;
+
+            outputln!("pkg: {:?}", original_package_meta);
+            outputln!("proj: {:?}", original_project_meta);
             project = branch_to;
+
+            let mut package_mod = PackageModifier::new();
+            if let Some(enabled_repos) = enabled_repos {
+                let disabled_repos = original_project_meta
+                    .repositories
+                    .iter()
+                    .map(|repo| &repo.name)
+                    .filter(|name| !enabled_repos.contains(name))
+                    .cloned()
+                    .map(|name| BuildTarget::repo(name))
+                    .collect::<Vec<_>>();
+                package_mod = package_mod.with_build_disabled(disabled_repos);
+            }
+
+            package_mod.commit(&client.project(project.clone())).await?;
         }
 
         Ok(ObsDscUploader {
@@ -318,6 +342,7 @@ impl ObsDscUploader {
             .file_name()
             .ok_or_else(|| eyre!("Invalid dsc path: {}", self.dsc_path))?;
 
+        // TODO: filter by enabled_repos?
         outputln!(
             "Uploading {} to {}/{}...",
             dsc_filename,
@@ -450,6 +475,7 @@ mod tests {
                 None,
                 STUB_DSC.to_owned().into(),
                 &artifacts,
+                &None,
             )
             .await
         );
@@ -466,6 +492,7 @@ mod tests {
                 None,
                 STUB_DSC.to_owned().into(),
                 &artifacts,
+                &None,
             )
             .await
         );
@@ -514,6 +541,7 @@ mod tests {
                 None,
                 STUB_DSC.to_owned().into(),
                 &artifacts,
+                &None,
             )
             .await
         );
@@ -691,7 +719,8 @@ mod tests {
                 TEST_PROJECT.to_owned(),
                 None,
                 dsc1_file.to_owned(),
-                &artifacts
+                &artifacts,
+                &None,
             )
             .await
         );
@@ -744,7 +773,8 @@ mod tests {
                 TEST_PROJECT.to_owned(),
                 None,
                 dsc2_file.to_owned(),
-                &artifacts
+                &artifacts,
+                &None,
             )
             .await
         );
@@ -781,7 +811,8 @@ mod tests {
                 TEST_PROJECT.to_owned(),
                 None,
                 dsc3_file.to_owned(),
-                &artifacts
+                &artifacts,
+                &None,
             )
             .await
         );
@@ -813,7 +844,8 @@ mod tests {
                 TEST_PROJECT.to_owned(),
                 None,
                 dsc4_file.to_owned(),
-                &artifacts
+                &artifacts,
+                &None,
             )
             .await
         );
@@ -850,7 +882,8 @@ mod tests {
                 TEST_PROJECT.to_owned(),
                 Some(branched_project.clone()),
                 dsc4_file.to_owned(),
-                &artifacts
+                &artifacts,
+                &None,
             )
             .await
         );

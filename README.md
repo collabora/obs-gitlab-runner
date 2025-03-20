@@ -84,6 +84,7 @@ dput PROJECT DSC_FILE
   [--branch-to BRANCHED_PROJECT]
   [--build-info-out BUILD_INFO_FILE=build-info.yml]
   [--rebuild-if-unchanged]
+  [--repositories REPO[,REPO...]]
 ```
 
 This will upload the given .dsc file, as well as any files referenced by it, to
@@ -123,6 +124,16 @@ rebuild when no actual upload takes place.
 Note that, if `--branch-to` was specified, this will, in practice, never be
 triggered: due to the way metadata files are handled, right after a branching
 operation, there will *always* be a change to upload.
+
+##### `--repositories REPO[,REPO,...]`
+
+A comma separated list of one or more repositories. If set the .dsc file will be
+uploaded for only specified repositories that are part of the target project,
+otherwise it will be uploaded for all the target projects repositories.
+```
+// TODO: Should this work as a filter or specify repositories to build against
+```
+
 
 #### `generate-monitor`
 

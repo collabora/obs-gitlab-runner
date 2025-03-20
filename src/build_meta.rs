@@ -1,8 +1,8 @@
 use std::{collections::HashMap, time::Duration};
 
-use color_eyre::eyre::{Result, WrapErr};
+use color_eyre::eyre::{eyre, Result, WrapErr};
 use gitlab_runner::outputln;
-use open_build_service_api as obs;
+use open_build_service_api::{self as obs};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info_span, instrument, Instrument};
 
@@ -56,6 +56,7 @@ pub enum DisabledRepos {
 pub struct BuildMetaOptions {
     pub history_retrieval: BuildHistoryRetrieval,
     pub disabled_repos: DisabledRepos,
+    pub enabled_repos: Option<Vec<String>>,
 }
 
 #[instrument(skip(client))]
@@ -158,15 +159,44 @@ impl BuildMeta {
 
         let mut repos = HashMap::new();
 
-        for repo_meta in project_meta.repositories {
-            for arch in repo_meta.arches {
+        // Verify that all enabled repos exist for project
+        if let Some(enabled_repos) = &options.enabled_repos {
+            /*
+            for repo_name in enabled_repos.iter() {
+                if !project_meta
+                    .repositories
+                    .iter()
+                    .any(|repo| &repo.name == repo_name)
+                {
+                    return Err(eyre!("Project {:?} doesn't contain repo {:?}", project, repo_name));
+                }
+            }
+            */
+        }
+        //for repo_name in options.enabled_repos.iter().flatten() {
+        //    project_meta.repositories.iter().all(f)
+        //}
+
+        // TODO: Okay, too vague. We should alert if repository is missing from target project
+        //  The Command line flag should be called --enabled-repositories
+        // TODO: Should we / are we blocking builds for repo or just monitoring?
+        // TODO: Should "repositories" be a filter or have the ability to add fields to the repositories list
+        // TODO: In a given project meta are the rebuild and block values used? (<repository name="rebuild" rebuild="local" block="never">)
+        //          In the case they are, can I use block to stop a build?
+        for repo_meta in project_meta.repositories.iter().filter(|r| {
+            true || options
+                .enabled_repos
+                .as_ref()
+                .map_or(true, |a| a.contains(&r.name))
+        }) {
+            for arch in &repo_meta.arches {
                 if let DisabledRepos::Skip { wait_options } = &options.disabled_repos {
                     let status = get_status_when_ready(
                         &client,
                         &project,
                         &package,
                         &repo_meta.name,
-                        &arch,
+                        arch,
                         wait_options,
                     )
                     .await?;
@@ -186,7 +216,7 @@ impl BuildMeta {
                                 .project(project.to_owned())
                                 .jobhistory(
                                     &repo_meta.name,
-                                    &arch,
+                                    arch,
                                     &obs::JobHistoryFilters::only_package(package.to_owned()),
                                 )
                                 .instrument(
@@ -202,7 +232,7 @@ impl BuildMeta {
                 repos.insert(
                     RepoArch {
                         repo: repo_meta.name.clone(),
-                        arch,
+                        arch: arch.to_owned(),
                     },
                     jobhist,
                 );
@@ -224,6 +254,7 @@ impl BuildMeta {
     }
 
     pub async fn remove_disabled_repos(&mut self, options: &BuildMetaWaitOptions) -> Result<()> {
+        println!("durrrrr : {:?}", self.repos.keys());
         for repo_arch in self.repos.keys().cloned().collect::<Vec<_>>() {
             let status = get_status_when_ready(
                 &self.client,
@@ -360,6 +391,7 @@ mod tests {
                     disabled_repos: DisabledRepos::Skip {
                         wait_options: Default::default()
                     },
+                    enabled_repos: None,
                 }
             )
             .await
@@ -386,6 +418,7 @@ mod tests {
                     disabled_repos: DisabledRepos::Skip {
                         wait_options: Default::default()
                     },
+                    enabled_repos: None,
                 }
             )
             .await
@@ -433,6 +466,7 @@ mod tests {
                     disabled_repos: DisabledRepos::Skip {
                         wait_options: Default::default()
                     },
+                    enabled_repos: None,
                 }
             )
             .await
@@ -467,6 +501,7 @@ mod tests {
                     disabled_repos: DisabledRepos::Skip {
                         wait_options: Default::default()
                     },
+                    enabled_repos: None,
                 }
             )
             .await
@@ -502,6 +537,7 @@ mod tests {
                     disabled_repos: DisabledRepos::Skip {
                         wait_options: Default::default()
                     },
+                    enabled_repos: None,
                 }
             )
             .await
@@ -516,6 +552,25 @@ mod tests {
                 &BuildMetaOptions {
                     history_retrieval: BuildHistoryRetrieval::Full,
                     disabled_repos: DisabledRepos::Keep,
+                    enabled_repos: None,
+                }
+            )
+            .await
+        );
+        assert_eq!(meta.repos.len(), 2);
+
+        assert_ok!(meta.remove_disabled_repos(&Default::default()).await);
+        assert_eq!(meta.repos.len(), 0);
+
+        let mut meta = assert_ok!(
+            BuildMeta::get(
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                TEST_PACKAGE_1.to_owned(),
+                &BuildMetaOptions {
+                    history_retrieval: BuildHistoryRetrieval::Full,
+                    disabled_repos: DisabledRepos::Keep,
+                    enabled_repos: None,
                 }
             )
             .await
@@ -573,7 +628,8 @@ mod tests {
                     history_retrieval: BuildHistoryRetrieval::Full,
                     disabled_repos: DisabledRepos::Skip {
                         wait_options: Default::default()
-                    }
+                    },
+                    enabled_repos: None,
                 }
             )
             .await
@@ -628,6 +684,7 @@ mod tests {
                     } else {
                         DisabledRepos::Keep
                     },
+                    enabled_repos: None,
                 }
             )
             .await

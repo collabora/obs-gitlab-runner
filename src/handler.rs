@@ -21,7 +21,7 @@ use open_build_service_api as obs;
 use serde::{Deserialize, Serialize};
 use tokio::{fs::File as AsyncFile, io::AsyncSeekExt};
 use tokio_util::{compat::TokioAsyncReadCompatExt, io::ReaderStream};
-use tracing::{debug, error, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
     artifacts::{save_to_tempfile, ArtifactDirectory},
@@ -61,6 +61,7 @@ impl FlagSupportingExplicitValue for clap::Arg {
 
 #[derive(Parser, Debug)]
 struct DputAction {
+    /// Project
     project: String,
     dsc: String,
     #[clap(long, default_value = "")]
@@ -69,6 +70,9 @@ struct DputAction {
     build_info_out: String,
     #[clap(long, flag_supporting_explicit_value())]
     rebuild_if_unchanged: bool,
+    /// Comma separated list of repositories to trigger build for
+    #[clap(long, value_delimiter = ',')]
+    repositories: Option<Vec<String>>,
 }
 
 #[derive(Parser, Debug)]
@@ -148,7 +152,7 @@ struct EchoAction {
     sep: String,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 enum Action {
     Dput(DputAction),
     GenerateMonitor(GenerateMonitorAction),
@@ -361,6 +365,7 @@ impl ObsJobHandler {
             branch_to,
             args.dsc.as_str().into(),
             self,
+            &args.repositories,
         )
         .await?;
 
@@ -394,6 +399,7 @@ impl ObsJobHandler {
                 // Getting disabled repos has to happen *after* the upload,
                 // since the new version can change the supported architectures.
                 disabled_repos: DisabledRepos::Keep,
+                enabled_repos: None, //args.repositories.clone(),
             },
         )
         .await?;
@@ -420,6 +426,7 @@ impl ObsJobHandler {
                     disabled_repos: DisabledRepos::Skip {
                         wait_options: Default::default(),
                     },
+                    enabled_repos: None, // args.repositories.clone(),
                 },
             )
             .await?
@@ -658,6 +665,7 @@ impl ObsJobHandler {
         let args = shell_words::split(&cmdline).wrap_err("Invalid command line")?;
         let command = Command::try_parse_from(args)?;
 
+        info!(?command.action);
         match command.action {
             Action::Dput(args) => self.run_dput(args).await?,
             Action::GenerateMonitor(args) => self.run_generate_monitor(args).await?,
@@ -875,6 +883,9 @@ mod tests {
                                 .with_targets([
                                     ("obs_gitlab_runner", Level::TRACE),
                                     ("gitlab_runner", Level::DEBUG),
+                                    ("gitlab_runner_mock", Level::DEBUG),
+                                    ("open_build_service_api", Level::DEBUG),
+                                    ("open_build_service_mock", Level::DEBUG),
                                 ])
                                 .with_default(Level::WARN),
                         ),

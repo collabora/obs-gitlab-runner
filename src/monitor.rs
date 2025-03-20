@@ -111,7 +111,7 @@ impl ObsMonitor {
         let result = all_results
             .results
             .into_iter()
-            .find(|r| r.arch == self.package.arch)
+            .find(|r| r.arch == self.package.arch && r.repository == self.package.repository)
             .ok_or_else(|| {
                 eyre!(
                     "Failed to find results for architecture {}",

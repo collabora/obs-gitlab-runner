@@ -789,7 +789,7 @@ mod tests {
 
     use camino::Utf8Path;
     use claim::*;
-    use gitlab_runner::Runner;
+    use gitlab_runner::{GitlabLayer, Runner, RunnerBuilder};
     use gitlab_runner_mock::*;
     use open_build_service_mock::*;
     use rstest::rstest;
@@ -838,11 +838,15 @@ mod tests {
 
         let runner_dir = tempfile::tempdir().unwrap();
         let gitlab_mock = GitlabRunnerMock::start().await;
-        let (runner, layer) = Runner::new_with_layer(
+        let (layer, jobs) = GitlabLayer::new();
+        let runner = RunnerBuilder::new(
             gitlab_mock.uri(),
             gitlab_mock.runner_token().to_owned(),
             runner_dir.path().to_owned(),
-        );
+            jobs,
+        )
+        .build()
+        .await;
 
         let obs_mock = create_default_mock().await;
         let obs_client = create_default_client(&obs_mock);

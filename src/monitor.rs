@@ -289,7 +289,7 @@ impl ObsMonitor {
 mod tests {
     use std::{collections::HashMap, time::SystemTime};
 
-    use claim::*;
+    use claims::*;
     use obs::PackageCode;
     use open_build_service_mock::*;
 

@@ -61,7 +61,7 @@ where
 mod tests {
     use std::sync::atomic::{AtomicI32, Ordering};
 
-    use claim::*;
+    use claims::*;
     use open_build_service_api as obs;
     use rstest::*;
     use wiremock::{

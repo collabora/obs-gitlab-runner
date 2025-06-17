@@ -273,7 +273,7 @@ impl BuildMeta {
 mod tests {
     use std::time::{Duration, SystemTime};
 
-    use claim::*;
+    use claims::*;
     use open_build_service_mock::*;
     use rstest::rstest;
 

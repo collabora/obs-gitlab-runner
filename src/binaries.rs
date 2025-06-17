@@ -71,7 +71,7 @@ pub async fn download_binaries(
 mod tests {
     use std::time::SystemTime;
 
-    use claim::*;
+    use claims::*;
     use open_build_service_mock::*;
     use tokio::io::AsyncReadExt;
 

@@ -387,7 +387,7 @@ impl ObsDscUploader {
 mod tests {
     use std::{sync::Arc, time::SystemTime};
 
-    use claim::*;
+    use claims::*;
     use open_build_service_mock::*;
 
     use crate::{artifacts::test_support::MockArtifactDirectory, test_support::*};

@@ -1,22 +1,29 @@
-use std::{collections::HashMap, io};
+use std::io;
 
+use camino::{Utf8Path, Utf8PathBuf};
 use color_eyre::eyre::{Report, Result, WrapErr};
 use futures_util::TryStreamExt;
 use open_build_service_api as obs;
-use tokio::{fs::File as AsyncFile, io::AsyncSeekExt};
+use tokio::io::AsyncSeekExt;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{Instrument, info_span, instrument};
 
-use crate::retry_request;
+use crate::{artifacts::ArtifactDirectory, retry_request};
 
-#[instrument(skip(client))]
+pub struct DownloadSummary {
+    pub paths: Vec<Utf8PathBuf>,
+}
+
+#[instrument(skip(client, artifacts))]
 pub async fn download_binaries(
     client: obs::Client,
     project: &str,
     package: &str,
     repository: &str,
     arch: &str,
-) -> Result<HashMap<String, AsyncFile>> {
+    artifacts: &mut impl ArtifactDirectory,
+    output_root: &Utf8Path,
+) -> Result<DownloadSummary> {
     let binary_list = retry_request!(
         client
             .project(project.to_owned())
@@ -24,41 +31,45 @@ pub async fn download_binaries(
             .binaries(repository, arch)
             .await
     )?;
-    let mut binaries = HashMap::new();
+
+    let mut summary = DownloadSummary { paths: vec![] };
 
     for binary in binary_list.binaries {
-        let mut dest = retry_request!(
-            async {
-                let mut dest = AsyncFile::from_std(
-                    tempfile::tempfile().wrap_err("Failed to create temporary file")?,
-                );
+        let dest = output_root.join(&binary.filename);
 
-                let stream = client
-                    .project(project.to_owned())
-                    .package(package.to_owned())
-                    .binary_file(repository, arch, &binary.filename)
+        let binary = binary.clone();
+        let client = client.clone();
+        artifacts
+            .save_with(&dest, async move |mut file| {
+                retry_request!(
+                    async {
+                        file.rewind().await.wrap_err("Failed to rewind file")?;
+
+                        let stream = client
+                            .project(project.to_owned())
+                            .package(package.to_owned())
+                            .binary_file(repository, arch, &binary.filename)
+                            .await
+                            .wrap_err("Failed to request file")?;
+
+                        tokio::io::copy(
+                            &mut stream.map_err(io::Error::other).into_async_read().compat(),
+                            &mut *file,
+                        )
+                        .await
+                        .wrap_err("Failed to download file")?;
+                        Ok::<(), Report>(())
+                    }
+                    .instrument(info_span!("download_binaries:download", ?binary))
                     .await
-                    .wrap_err("Failed to request file")?;
-
-                tokio::io::copy(
-                    &mut stream.map_err(io::Error::other).into_async_read().compat(),
-                    &mut dest,
                 )
-                .await
-                .wrap_err("Failed to download file")?;
-                Ok::<AsyncFile, Report>(dest)
-            }
-            .instrument(info_span!("download_binaries:download", ?binary))
-            .await
-        )?;
-
-        dest.rewind()
-            .instrument(info_span!("download_binaries:rewind", ?binary))
+            })
             .await?;
-        binaries.insert(binary.filename, dest);
+
+        summary.paths.push(dest);
     }
 
-    Ok(binaries)
+    Ok(summary)
 }
 
 #[cfg(test)]
@@ -67,14 +78,14 @@ mod tests {
 
     use claims::*;
     use open_build_service_mock::*;
-    use tokio::io::AsyncReadExt;
 
-    use crate::test_support::*;
+    use crate::{artifacts::test_support::MockArtifactDirectory, test_support::*};
 
     use super::*;
 
     #[tokio::test]
     async fn test_build_results() {
+        let test_dir: &Utf8Path = "results".into();
         let test_file = "test.bin";
         let test_contents = "123980238";
 
@@ -109,15 +120,24 @@ mod tests {
         );
 
         let client = create_default_client(&mock);
+        let mut artifacts = MockArtifactDirectory::default();
 
-        let mut binaries = assert_ok!(
-            download_binaries(client, TEST_PROJECT, TEST_PACKAGE_1, TEST_REPO, TEST_ARCH_1).await
+        let summary = assert_ok!(
+            download_binaries(
+                client,
+                TEST_PROJECT,
+                TEST_PACKAGE_1,
+                TEST_REPO,
+                TEST_ARCH_1,
+                &mut artifacts,
+                test_dir,
+            )
+            .await
         );
-        assert_eq!(binaries.len(), 1);
 
-        let binary = assert_some!(binaries.get_mut(test_file));
-        let mut contents = String::new();
-        assert_ok!(binary.read_to_string(&mut contents).await);
+        assert_eq!(summary.paths, vec![test_dir.join(test_file)]);
+
+        let contents = assert_ok!(artifacts.read_string(test_dir.join(test_file)).await);
         assert_eq!(contents, test_contents);
     }
 }

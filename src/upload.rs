@@ -8,6 +8,7 @@ use futures_util::{Stream, TryStreamExt};
 use gitlab_runner::outputln;
 use md5::{Digest, Md5};
 use open_build_service_api as obs;
+use tokio::io::AsyncSeekExt;
 use tracing::{Instrument, debug, info_span, instrument, trace};
 
 use crate::{artifacts::ArtifactDirectory, dsc::Dsc, retry_request};
@@ -65,7 +66,7 @@ pub struct ObsDscUploader {
 
     dsc_path: Utf8PathBuf,
     #[derivative(Debug = "ignore")]
-    dsc_contents: Vec<u8>,
+    dsc_contents: String,
     dsc: Dsc,
 
     options: ObsUploaderOptions,
@@ -80,11 +81,10 @@ impl ObsDscUploader {
         artifacts: &impl ArtifactDirectory,
     ) -> Result<ObsDscUploader> {
         let dsc_contents = artifacts
-            .get_data(dsc_path.as_str())
+            .read_string(dsc_path.as_str())
             .await
-            .wrap_err("Failed to download dsc")?;
-        let dsc: Dsc =
-            rfc822_like::from_bytes(&dsc_contents[..]).wrap_err("Failed to parse dsc")?;
+            .wrap_err("Failed to read dsc")?;
+        let dsc: Dsc = rfc822_like::from_str(&dsc_contents).wrap_err("Failed to parse dsc")?;
 
         let package = dsc.source.to_owned();
 
@@ -225,10 +225,11 @@ impl ObsDscUploader {
         artifacts: &impl ArtifactDirectory,
     ) -> Result<()> {
         debug!("Uploading file");
-        let file = artifacts.get_file(root.join(filename).as_str()).await?;
+        let file = artifacts.open(root.join(filename).as_str()).await?;
 
         retry_request!({
-            let file = file.try_clone().await.wrap_err("Failed to clone file")?;
+            let mut file = file.try_clone().await?;
+            file.rewind().await?;
             self.client
                 .project(self.project.clone())
                 .package(self.package.clone())
@@ -328,7 +329,10 @@ impl ObsDscUploader {
         }
 
         files_to_commit.insert(META_NAME.to_owned(), self.get_latest_meta_md5().await?);
-        files_to_commit.insert(dsc_filename.to_owned(), compute_md5(&self.dsc_contents[..]));
+        files_to_commit.insert(
+            dsc_filename.to_owned(),
+            compute_md5(self.dsc_contents.as_bytes()),
+        );
 
         trace!(?files_to_commit, ?present_files);
 
@@ -375,7 +379,7 @@ impl ObsDscUploader {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::SystemTime};
+    use std::time::SystemTime;
 
     use claims::*;
     use open_build_service_mock::*;
@@ -386,11 +390,11 @@ mod tests {
 
     const STUB_DSC: &str = "stub.dsc";
 
-    fn add_stub_dsc(artifacts: &mut MockArtifactDirectory, package: &str) {
-        artifacts.artifacts.insert(
-            STUB_DSC.to_owned(),
-            Arc::new(format!("Source: {package}").as_bytes().to_vec()),
-        );
+    async fn add_stub_dsc(artifacts: &mut MockArtifactDirectory, package: &str) {
+        artifacts
+            .write(STUB_DSC, format!("Source: {package}").as_bytes())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -425,11 +429,9 @@ mod tests {
         );
 
         let client = create_default_client(&mock);
-        let mut artifacts = MockArtifactDirectory {
-            artifacts: [].into(),
-        };
+        let mut artifacts = MockArtifactDirectory::default();
 
-        add_stub_dsc(&mut artifacts, TEST_PACKAGE_1);
+        add_stub_dsc(&mut artifacts, TEST_PACKAGE_1).await;
         let uploader = assert_ok!(
             ObsDscUploader::prepare(
                 client.clone(),
@@ -445,7 +447,7 @@ mod tests {
         assert_eq!(dir.entries.len(), 1);
         assert_eq!(dir.entries[0].name, test_file);
 
-        add_stub_dsc(&mut artifacts, TEST_PACKAGE_2);
+        add_stub_dsc(&mut artifacts, TEST_PACKAGE_2).await;
         let uploader = assert_ok!(
             ObsDscUploader::prepare(
                 client.clone(),
@@ -485,15 +487,11 @@ mod tests {
             .project(TEST_PROJECT.to_owned())
             .package(TEST_PACKAGE_1.to_owned());
 
-        let mut artifacts = MockArtifactDirectory {
-            artifacts: [
-                (test1_file.to_owned(), Arc::new(test1_contents.to_vec())),
-                (test2_file.to_owned(), Arc::new(test2_contents.to_vec())),
-            ]
-            .into(),
-        };
+        let mut artifacts = MockArtifactDirectory::default();
+        artifacts.write(test1_file, test1_contents).await.unwrap();
+        artifacts.write(test2_file, test2_contents).await.unwrap();
 
-        add_stub_dsc(&mut artifacts, TEST_PACKAGE_1);
+        add_stub_dsc(&mut artifacts, TEST_PACKAGE_1).await;
         let uploader = assert_ok!(
             ObsDscUploader::prepare(
                 client.clone(),
@@ -640,35 +638,32 @@ mod tests {
             .project(TEST_PROJECT.to_owned())
             .package(TEST_PACKAGE_1.to_owned());
 
-        let mut artifacts = MockArtifactDirectory {
-            artifacts: [
-                (
-                    format!("subdir/{test1_file}"),
-                    Arc::new(test1_contents_a.to_vec()),
-                ),
-                (
-                    format!("subdir/{test2_file}"),
-                    Arc::new(test2_contents.to_vec()),
-                ),
-                (
-                    dsc1_file.to_string(),
-                    Arc::new(dsc1_contents.as_bytes().to_vec()),
-                ),
-                (
-                    dsc2_file.to_string(),
-                    Arc::new(dsc2_contents.as_bytes().to_vec()),
-                ),
-                (
-                    dsc3_file.to_string(),
-                    Arc::new(dsc3_contents.as_bytes().to_vec()),
-                ),
-                (
-                    dsc4_file.to_string(),
-                    Arc::new(dsc4_contents.as_bytes().to_vec()),
-                ),
-            ]
-            .into(),
-        };
+        let mut artifacts = MockArtifactDirectory::default();
+
+        artifacts
+            .write(format!("subdir/{test1_file}"), test1_contents_a)
+            .await
+            .unwrap();
+        artifacts
+            .write(format!("subdir/{test2_file}"), test2_contents)
+            .await
+            .unwrap();
+        artifacts
+            .write(dsc1_file.as_str(), dsc1_contents.as_bytes())
+            .await
+            .unwrap();
+        artifacts
+            .write(dsc2_file.as_str(), dsc2_contents.as_bytes())
+            .await
+            .unwrap();
+        artifacts
+            .write(dsc3_file.as_str(), dsc3_contents.as_bytes())
+            .await
+            .unwrap();
+        artifacts
+            .write(dsc4_file.as_str(), dsc4_contents.as_bytes())
+            .await
+            .unwrap();
 
         // Start adding a few source files.
 
@@ -756,11 +751,10 @@ mod tests {
         assert_eq!(dir.srcmd5, result.build_srcmd5);
 
         // Change the contents of one of the files.
-
-        artifacts.artifacts.insert(
-            format!("subdir/{test1_file}"),
-            Arc::new(test1_contents_b.to_vec()),
-        );
+        artifacts
+            .write(format!("subdir/{test1_file}"), test1_contents_b)
+            .await
+            .unwrap();
 
         let uploader = assert_ok!(
             ObsDscUploader::prepare(

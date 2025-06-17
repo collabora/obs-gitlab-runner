@@ -1,14 +1,14 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
-    fs::File,
-    io::SeekFrom,
+    future::Future,
+    io::{Seek, SeekFrom},
 };
 
 use async_trait::async_trait;
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::{ArgAction, Parser, Subcommand};
-use color_eyre::eyre::{Context, Result, eyre};
+use color_eyre::eyre::{Context, Report, Result, eyre};
 use derivative::*;
 use futures_util::StreamExt;
 use gitlab_runner::{
@@ -18,7 +18,10 @@ use gitlab_runner::{
 };
 use open_build_service_api as obs;
 use serde::{Deserialize, Serialize};
-use tokio::{fs::File as AsyncFile, io::AsyncSeekExt};
+use tokio::{
+    fs::File as AsyncFile,
+    io::{AsyncSeekExt, AsyncWriteExt},
+};
 use tokio_util::{
     compat::{Compat, TokioAsyncReadCompatExt},
     io::ReaderStream,
@@ -26,7 +29,10 @@ use tokio_util::{
 use tracing::{debug, error, instrument, warn};
 
 use crate::{
-    artifacts::{ArtifactDirectory, save_to_tempfile},
+    artifacts::{
+        ArtifactDirectory, AsyncFileReopen, MissingArtifact, MissingArtifactToNone, ScopedCell,
+        async_tempfile,
+    },
     binaries::download_binaries,
     build_meta::{
         BuildHistoryRetrieval, BuildMeta, BuildMetaOptions, CommitBuildInfo, DisabledRepos,
@@ -68,8 +74,8 @@ struct DputAction {
     dsc: String,
     #[clap(long, default_value = "")]
     branch_to: String,
-    #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned())]
-    build_info_out: String,
+    #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned().into())]
+    build_info_out: Utf8PathBuf,
     #[clap(long, flag_supporting_explicit_value())]
     rebuild_if_unchanged: bool,
 }
@@ -181,11 +187,19 @@ struct ObsBuildInfo {
 }
 
 impl ObsBuildInfo {
-    #[instrument]
-    fn save(&self) -> Result<File> {
-        let mut file = tempfile::tempfile().wrap_err("Failed to create build info file")?;
-        serde_yaml::to_writer(&mut file, self).wrap_err("Failed to write build info file")?;
-        Ok(file)
+    #[instrument(skip(artifacts))]
+    async fn save(self, artifacts: &mut impl ArtifactDirectory, path: &Utf8Path) -> Result<()> {
+        artifacts
+            .save_with(path, async |file| {
+                let mut file = file.try_clone().await?.into_std().await;
+                tokio::task::spawn_blocking(move || {
+                    serde_yaml::to_writer(&mut file, &self)
+                        .wrap_err("Failed to write build info file")
+                })
+                .await??;
+                Ok::<_, Report>(())
+            })
+            .await
     }
 }
 
@@ -222,7 +236,7 @@ pub struct ObsJobHandler {
     options: HandlerOptions,
 
     script_failed: bool,
-    artifacts: HashMap<String, AsyncFile>,
+    artifacts: HashMap<Utf8PathBuf, AsyncFile>,
 }
 
 impl ObsJobHandler {
@@ -306,14 +320,7 @@ impl ObsJobHandler {
             enabled_repos: HashMap::new(),
         };
         debug!("Saving initial build info: {:?}", build_info);
-
-        let build_info_2 = build_info.clone();
-        let build_info_file = tokio::task::spawn_blocking(move || build_info_2.save()).await??;
-
-        self.artifacts.insert(
-            args.build_info_out.clone(),
-            AsyncFile::from_std(build_info_file),
-        );
+        build_info.clone().save(self, &args.build_info_out).await?;
 
         let initial_build_meta = BuildMeta::get_if_package_exists(
             self.client.clone(),
@@ -387,21 +394,18 @@ impl ObsJobHandler {
             ..build_info
         };
         debug!("Saving complete build info: {:?}", build_info);
-
-        let build_info_file = tokio::task::spawn_blocking(move || build_info.save()).await??;
-        self.artifacts
-            .insert(args.build_info_out, AsyncFile::from_std(build_info_file));
+        build_info.save(self, &args.build_info_out).await?;
 
         Ok(())
     }
 
     #[instrument(skip(self))]
     async fn run_generate_monitor(&mut self, args: GenerateMonitorAction) -> Result<()> {
-        let build_info_data = self.get_data(&args.build_info).await?;
-        let build_info: ObsBuildInfo = serde_yaml::from_slice(&build_info_data[..])
+        let build_info_data = self.read_string(&args.build_info).await?;
+        let build_info: ObsBuildInfo = serde_yaml::from_str(&build_info_data)
             .wrap_err("Failed to parse provided build info file")?;
 
-        let file = generate_monitor_pipeline(
+        let pipeline = generate_monitor_pipeline(
             &build_info.project,
             &build_info.package,
             &build_info
@@ -429,9 +433,8 @@ impl ObsJobHandler {
                 build_log_out: args.build_log_out.to_string(),
             },
         )?;
-        self.artifacts
-            .insert(args.pipeline_out.clone(), AsyncFile::from_std(file));
 
+        self.write(&args.pipeline_out, pipeline.as_bytes()).await?;
         outputln!("Wrote pipeline file '{}'.", args.pipeline_out);
 
         Ok(())
@@ -457,15 +460,9 @@ impl ObsJobHandler {
             .await?;
         debug!("Completed with: {:?}", completion);
 
-        let mut log_file = monitor.download_build_log().await?;
-        self.artifacts.insert(
-            args.build_log_out.clone(),
-            log_file
-                .file
-                .try_clone()
-                .await
-                .wrap_err("Failed to clone log file")?,
-        );
+        let mut log_file = monitor
+            .download_build_log(&args.build_log_out, self)
+            .await?;
 
         match completion {
             PackageCompletion::Succeeded => {
@@ -517,17 +514,12 @@ impl ObsJobHandler {
             &args.package,
             &args.repository,
             &args.arch,
+            self,
+            &args.build_results_dir,
         )
         .await?;
-        let binary_count = binaries.len();
 
-        self.artifacts.extend(
-            binaries
-                .into_iter()
-                .map(|(path, file)| (args.build_results_dir.join(path).to_string(), file)),
-        );
-
-        outputln!("Downloaded {} artifact(s).", binary_count);
+        outputln!("Downloaded {} artifact(s).", binaries.paths.len());
         Ok(())
     }
 
@@ -539,7 +531,11 @@ impl ObsJobHandler {
         }
 
         let build_info_data = if args.ignore_missing_build_info {
-            if let Some(build_info_data) = self.get_data_or_none(&args.build_info).await? {
+            if let Some(build_info_data) = self
+                .read_string(&args.build_info)
+                .await
+                .missing_artifact_to_none()?
+            {
                 build_info_data
             } else {
                 outputln!(
@@ -549,10 +545,10 @@ impl ObsJobHandler {
                 return Ok(());
             }
         } else {
-            self.get_data(&args.build_info).await?
+            self.read_string(&args.build_info).await?
         };
 
-        let build_info: ObsBuildInfo = serde_yaml::from_slice(&build_info_data[..])
+        let build_info: ObsBuildInfo = serde_yaml::from_str(&build_info_data)
             .wrap_err("Failed to parse provided build info file")?;
 
         if build_info.is_branched {
@@ -610,7 +606,7 @@ impl ObsJobHandler {
 }
 
 pub struct UploadableArtifact {
-    path: String,
+    path: Utf8PathBuf,
     file: AsyncFile,
 }
 
@@ -619,12 +615,12 @@ impl UploadableFile for UploadableArtifact {
     type Data<'a> = Compat<AsyncFile>;
 
     fn get_path(&self) -> Cow<'_, str> {
-        Cow::Borrowed(&self.path)
+        Cow::Borrowed(self.path.as_str())
     }
 
     async fn get_data(&self) -> Result<Self::Data<'_>, ()> {
         self.file
-            .try_clone()
+            .reopen()
             .await
             .map(TokioAsyncReadCompatExt::compat)
             .map_err(|e| {
@@ -657,12 +653,7 @@ impl JobHandler<UploadableArtifact> for ObsJobHandler {
     ) -> Result<Box<dyn Iterator<Item = UploadableArtifact> + Send>, ()> {
         let mut files = vec![];
         for (path, file) in &mut self.artifacts {
-            match async {
-                file.rewind().await?;
-                file.try_clone().await
-            }
-            .await
-            {
+            match file.try_clone().await {
                 Ok(file) => files.push(UploadableArtifact {
                     path: path.clone(),
                     file,
@@ -679,17 +670,23 @@ impl JobHandler<UploadableArtifact> for ObsJobHandler {
 }
 
 #[instrument(skip(dep), fields(dep_id = dep.id(), dep_name = dep.name()))]
-async fn check_for_artifact(dep: Dependency<'_>, filename: &str) -> Result<Option<AsyncFile>> {
-    // Needed because anything captured by spawn_blocking must have a 'static
-    // lifetime.
-    let filename = filename.to_owned();
+async fn check_for_artifact(dep: Dependency<'_>, path: &Utf8Path) -> Result<Option<AsyncFile>> {
+    // This needs to be an owned type, because captured by spawn_blocking must
+    // have a 'static lifetime, so we also take the opportunity to normalize the
+    // path from extra trailing slashes and similar.
+    let path = path.components().collect::<Utf8PathBuf>();
 
     // TODO: not spawn a sync environment for *every single artifact*
     if let Some(mut artifact) = dep.download().await? {
         if let Some(file) = tokio::task::spawn_blocking(move || {
             artifact
-                .file(&filename)
-                .map(|mut file| save_to_tempfile(&mut file))
+                .file(path.as_str())
+                .map(|mut file| {
+                    let mut temp = tempfile::tempfile()?;
+                    std::io::copy(&mut file, &mut temp)?;
+                    temp.rewind()?;
+                    Ok::<_, Report>(temp)
+                })
                 .transpose()
         })
         .await??
@@ -703,34 +700,46 @@ async fn check_for_artifact(dep: Dependency<'_>, filename: &str) -> Result<Optio
 
 #[async_trait]
 impl ArtifactDirectory for ObsJobHandler {
-    type Reader = File;
+    #[instrument(skip(self, path), path = path.as_ref())]
+    async fn open(&self, path: impl AsRef<Utf8Path> + Send) -> Result<AsyncFile> {
+        let path = path.as_ref();
 
-    #[instrument(skip(self))]
-    async fn get_file_or_none(&self, filename: &str) -> Result<Option<AsyncFile>> {
-        if let Some(file) = self.artifacts.get(filename) {
-            let mut file = file
-                .try_clone()
-                .await
-                .wrap_err("Failed to clone artifact")?;
-            file.rewind().await.wrap_err("Failed to rewind artifact")?;
-            return Ok(Some(file));
+        if let Some(file) = self.artifacts.get(path) {
+            let file = file.reopen().await.wrap_err("Failed to reopen artifact")?;
+            return Ok(file);
         }
 
         for dep in self.job.dependencies() {
-            if let Some(file) = check_for_artifact(dep, filename).await? {
-                return Ok(Some(file));
+            if let Some(file) = check_for_artifact(dep, path).await? {
+                return Ok(file);
             }
         }
 
-        Ok(None)
+        Err(MissingArtifact(path.to_owned()).into())
     }
 
-    #[instrument(skip(self))]
-    async fn get_or_none(&self, filename: &str) -> Result<Option<Self::Reader>> {
-        Ok(self
-            .get_file_or_none(filename)
-            .await?
-            .map(|f| f.try_into_std().unwrap()))
+    #[tracing::instrument(skip(self, path, func), path = path.as_ref())]
+    async fn save_with<
+        Ret: Send,
+        Err: Send,
+        Fut: Future<Output = Result<Ret, Err>> + Send,
+        F: (FnOnce(ScopedCell<AsyncFile>) -> Fut) + Send,
+    >(
+        &mut self,
+        path: impl AsRef<Utf8Path> + Send,
+        func: F,
+    ) -> Result<Ret>
+    where
+        Report: From<Err>,
+    {
+        let file = async_tempfile().await?;
+        let (mut file, ret) = ScopedCell::run(file, func).await;
+        let ret = ret?;
+
+        file.flush().await?;
+        self.artifacts
+            .insert(path.as_ref().to_owned(), file.reopen().await?);
+        Ok(ret)
     }
 }
 

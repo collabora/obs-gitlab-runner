@@ -71,7 +71,7 @@ pub async fn prune_branch(
 mod tests {
     use std::time::SystemTime;
 
-    use claim::*;
+    use claims::*;
     use open_build_service_mock::*;
 
     use crate::test_support::*;

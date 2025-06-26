@@ -3,7 +3,7 @@ use gitlab_runner::outputln;
 use open_build_service_api as obs;
 use tracing::info;
 
-use crate::retry::retry_request;
+use crate::retry_request;
 
 #[tracing::instrument(skip(client))]
 pub async fn prune_branch(
@@ -14,15 +14,15 @@ pub async fn prune_branch(
 ) -> Result<()> {
     // Do a sanity check to make sure this project & package are actually
     // linked (i.e. we're not going to be nuking the main repository).
-    let dir = retry_request(|| async {
+    let dir = retry_request!(
         client
             .project(project.to_owned())
             .package(package.to_owned())
             .list(None)
             .await
-    })
-    .await
-    .wrap_err("Failed to list package")?;
+            .wrap_err("Failed to list package")
+    )?;
+
     ensure!(
         !dir.linkinfo.is_empty(),
         "Rejecting attempt to prune a non-branched package"
@@ -38,27 +38,33 @@ pub async fn prune_branch(
         }
     }
 
-    retry_request(|| async {
+    retry_request!(
         client
             .project(project.to_owned())
             .package(package.to_owned())
             .delete()
             .await
-    })
-    .await
-    .wrap_err("Failed to delete package")?;
+            .wrap_err("Failed to delete package")
+    )?;
 
     outputln!("Deleted package {}/{}.", project, package);
 
-    let packages =
-        retry_request(|| async { client.project(project.to_owned()).list_packages().await })
+    let packages = retry_request!(
+        client
+            .project(project.to_owned())
+            .list_packages()
             .await
-            .wrap_err("Failed to list packages in project")?
-            .entries;
+            .wrap_err("Failed to list packages in project")
+    )?
+    .entries;
     if packages.is_empty() {
-        retry_request(|| async { client.project(project.to_owned()).delete().await })
-            .await
-            .wrap_err("Failed to delete project")?;
+        retry_request!(
+            client
+                .project(project.to_owned())
+                .delete()
+                .await
+                .wrap_err("Failed to delete project")
+        )?;
         outputln!("Deleted empty project {}.", project);
     } else {
         outputln!("Project has other packages, skipping deletion.");

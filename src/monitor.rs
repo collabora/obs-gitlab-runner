@@ -11,7 +11,7 @@ use tokio::{
 };
 use tracing::{debug, instrument};
 
-use crate::retry::retry_request;
+use crate::retry_request;
 
 #[derive(Debug)]
 pub enum PackageCompletion {
@@ -78,14 +78,13 @@ impl ObsMonitor {
 
     #[instrument(skip(self))]
     async fn get_latest_revision(&self) -> Result<String> {
-        let dir = retry_request(|| async {
+        let dir = retry_request!(
             self.client
                 .project(self.package.project.clone())
                 .package(self.package.package.clone())
                 .list(None)
                 .await
-        })
-        .await?;
+        )?;
         dir.rev.ok_or_else(|| eyre!("Latest revision is 0"))
     }
 
@@ -102,7 +101,7 @@ impl ObsMonitor {
             .project(self.package.project.clone())
             .package(self.package.package.clone());
 
-        let all_results = retry_request(|| async { client_package.result().await }).await?;
+        let all_results = retry_request!(client_package.result().await)?;
 
         // TODO: filter this in the API call instead of afterwards
         let result = all_results
@@ -131,7 +130,7 @@ impl ObsMonitor {
             // sure there is a build *newer* that the last endtime we have
             // recorded.
 
-            let jobhist = retry_request(|| async {
+            let jobhist = retry_request!(
                 client_project
                     .jobhistory(
                         &self.package.repository,
@@ -139,9 +138,8 @@ impl ObsMonitor {
                         &obs::JobHistoryFilters::only_package(self.package.package.clone()),
                     )
                     .await
-            })
-            .await
-            .wrap_err("Failed to get jobhistory")?;
+                    .wrap_err("Failed to get jobhistory")
+            )?;
             debug!(?jobhist.jobhist);
             let prev_endtime_for_commit = jobhist
                 .jobhist
@@ -246,7 +244,7 @@ impl ObsMonitor {
     pub async fn download_build_log(&self) -> Result<LogFile> {
         const LOG_LEN_TO_CHECK_FOR_MD5: u64 = 2500;
 
-        let mut file = retry_request(|| async {
+        let mut file = retry_request!({
             let mut file = AsyncFile::from_std(
                 tempfile::tempfile().wrap_err("Failed to create tempfile to build log")?,
             );
@@ -265,8 +263,7 @@ impl ObsMonitor {
             }
 
             Ok::<AsyncFile, Report>(file)
-        })
-        .await?;
+        })?;
 
         let len = file
             .stream_position()

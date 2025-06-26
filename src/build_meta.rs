@@ -76,8 +76,7 @@ async fn get_status(
     .await
     .wrap_err_with(|| {
         format!(
-            "Failed to get status of {}/{}/{}/{}",
-            project, repo, arch, package
+            "Failed to get status of {project}/{repo}/{arch}/{package}"
         )
     })?;
     debug!(?status);
@@ -254,7 +253,7 @@ impl BuildMeta {
                 .jobhist
                 .iter()
                 .filter(|e| e.srcmd5 == srcmd5)
-                .last()
+                .next_back()
                 .map(|e| e.endtime);
 
             repos.insert(

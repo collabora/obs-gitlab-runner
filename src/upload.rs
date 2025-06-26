@@ -399,7 +399,7 @@ mod tests {
     fn add_stub_dsc(artifacts: &mut MockArtifactDirectory, package: &str) {
         artifacts.artifacts.insert(
             STUB_DSC.to_owned(),
-            Arc::new(format!("Source: {}", package).as_bytes().to_vec()),
+            Arc::new(format!("Source: {package}").as_bytes().to_vec()),
         );
     }
 
@@ -653,11 +653,11 @@ mod tests {
         let mut artifacts = MockArtifactDirectory {
             artifacts: [
                 (
-                    format!("subdir/{}", test1_file),
+                    format!("subdir/{test1_file}"),
                     Arc::new(test1_contents_a.to_vec()),
                 ),
                 (
-                    format!("subdir/{}", test2_file),
+                    format!("subdir/{test2_file}"),
                     Arc::new(test2_contents.to_vec()),
                 ),
                 (
@@ -768,7 +768,7 @@ mod tests {
         // Change the contents of one of the files.
 
         artifacts.artifacts.insert(
-            format!("subdir/{}", test1_file),
+            format!("subdir/{test1_file}"),
             Arc::new(test1_contents_b.to_vec()),
         );
 
@@ -840,7 +840,7 @@ mod tests {
 
         // Upload to a new branch.
 
-        let branched_project = format!("{}:branch", TEST_PROJECT);
+        let branched_project = format!("{TEST_PROJECT}:branch");
         let uploader = assert_ok!(
             ObsDscUploader::prepare(
                 client.clone(),

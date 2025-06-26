@@ -44,10 +44,7 @@ pub async fn download_binaries(
                     .wrap_err("Failed to request file")?;
 
                 tokio::io::copy(
-                    &mut stream
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-                        .into_async_read()
-                        .compat(),
+                    &mut stream.map_err(io::Error::other).into_async_read().compat(),
                     &mut dest,
                 )
                 .await

@@ -7,7 +7,7 @@ use tokio::{fs::File as AsyncFile, io::AsyncSeekExt};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{Instrument, info_span, instrument};
 
-use crate::retry::retry_request;
+use crate::retry_request;
 
 #[instrument(skip(client))]
 pub async fn download_binaries(
@@ -17,21 +17,18 @@ pub async fn download_binaries(
     repository: &str,
     arch: &str,
 ) -> Result<HashMap<String, AsyncFile>> {
-    let binary_list = retry_request(|| async {
+    let binary_list = retry_request!(
         client
             .project(project.to_owned())
             .package(package.to_owned())
             .binaries(repository, arch)
             .await
-    })
-    .await?;
+    )?;
     let mut binaries = HashMap::new();
 
     for binary in binary_list.binaries {
-        let mut dest = retry_request(|| {
-            let binary = binary.clone();
-            let client = client.clone();
-            async move {
+        let mut dest = retry_request!(
+            async {
                 let mut dest = AsyncFile::from_std(
                     tempfile::tempfile().wrap_err("Failed to create temporary file")?,
                 );
@@ -51,9 +48,9 @@ pub async fn download_binaries(
                 .wrap_err("Failed to download file")?;
                 Ok::<AsyncFile, Report>(dest)
             }
-        })
-        .instrument(info_span!("download_binaries:download", ?binary))
-        .await?;
+            .instrument(info_span!("download_binaries:download", ?binary))
+            .await
+        )?;
 
         dest.rewind()
             .instrument(info_span!("download_binaries:rewind", ?binary))

@@ -193,7 +193,7 @@ struct FailedBuild;
 
 impl std::fmt::Display for FailedBuild {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -1074,12 +1074,12 @@ mod tests {
         )
         .await;
 
-        let mut dput_command = format!("dput {} {}", TEST_PROJECT, dsc1_file);
+        let mut dput_command = format!("dput {TEST_PROJECT} {dsc1_file}");
         let mut created_project = TEST_PROJECT.to_owned();
 
         if test == DputTest::Branch {
             created_project += ":branched";
-            dput_command += &format!(" --branch-to {}", created_project);
+            dput_command += &format!(" --branch-to {created_project}");
         }
 
         let dput = enqueue_job(
@@ -1359,11 +1359,12 @@ mod tests {
         );
 
         let mut generate_command = format!(
-            "generate-monitor {} --job-timeout '{}' --rules '[{{a: 1}}, {{b: 2}}]'",
-            TEST_JOB_RUNNER_TAG, TEST_MONITOR_TIMEOUT
+            "generate-monitor {TEST_JOB_RUNNER_TAG} \
+                --job-timeout '{TEST_MONITOR_TIMEOUT}' \
+                --rules '[{{a: 1}}, {{b: 2}}]'"
         );
         if download_binaries {
-            generate_command += &format!(" --download-build-results-to {}", TEST_BUILD_RESULTS_DIR);
+            generate_command += &format!(" --download-build-results-to {TEST_BUILD_RESULTS_DIR}");
         }
         let generate = enqueue_job(
             context,
@@ -1438,7 +1439,7 @@ mod tests {
             let monitor_map = pipeline_yaml
                 .as_mapping()
                 .unwrap()
-                .get(&monitor_job_name.as_str())
+                .get(monitor_job_name.as_str())
                 .unwrap()
                 .as_mapping()
                 .unwrap();
@@ -1489,7 +1490,7 @@ mod tests {
             assert_eq!(rules[1].get("b").unwrap().as_i64().unwrap(), 2);
 
             for script_key in ["before_script", "after_script"] {
-                let script = monitor_map.get(&script_key).unwrap().as_sequence().unwrap();
+                let script = monitor_map.get(script_key).unwrap().as_sequence().unwrap();
                 assert_eq!(script.len(), 0);
             }
 

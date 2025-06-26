@@ -336,9 +336,9 @@ mod tests {
             },
         );
 
-        assert_ok!(monitor.check_log_md5(&format!("srcmd5 '{}'", srcmd5)));
+        assert_ok!(monitor.check_log_md5(&format!("srcmd5 '{srcmd5}'")));
         assert_err!(monitor.check_log_md5("srcmd5 'xyz123'"));
-        assert_err!(monitor.check_log_md5(&format!("'{}'", srcmd5)));
+        assert_err!(monitor.check_log_md5(&format!("'{srcmd5}'")));
 
         mock.branch(
             TEST_PROJECT.to_owned(),
@@ -365,19 +365,18 @@ mod tests {
             },
         );
 
-        assert_ok!(monitor.check_log_md5(&format!("srcmd5 '{}'", branch_xsrcmd5)));
-        assert_err!(monitor.check_log_md5(&format!("srcmd5 '{}'", srcmd5)));
-        assert_err!(monitor.check_log_md5(&format!("srcmd5 '{}'", branch_srcmd5)));
+        assert_ok!(monitor.check_log_md5(&format!("srcmd5 '{branch_xsrcmd5}'")));
+        assert_err!(monitor.check_log_md5(&format!("srcmd5 '{srcmd5}'")));
+        assert_err!(monitor.check_log_md5(&format!("srcmd5 '{branch_srcmd5}'")));
     }
 
     #[tokio::test]
     async fn test_download_log() {
         let srcmd5 = random_md5();
         let log_content = format!(
-            "srcmd5 '{}'\n
+            "srcmd5 '{srcmd5}'\n
                 some random logs are here
-                testing 123 456",
-            srcmd5
+                testing 123 456"
         );
 
         let mock = create_default_mock().await;
@@ -851,6 +850,6 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(5), monitor.monitor_package(options)).await
         );
         let err = assert_err!(result);
-        assert!(err.to_string().contains("Old build status"), "{:?}", err);
+        assert!(err.to_string().contains("Old build status"), "{err:?}");
     }
 }

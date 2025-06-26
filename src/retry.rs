@@ -73,10 +73,6 @@ mod tests {
 
     use super::*;
 
-    fn wrap_in_io_error(err: obs::Error) -> std::io::Error {
-        std::io::Error::new(std::io::ErrorKind::Other, err)
-    }
-
     #[fixture]
     async fn server() -> MockServer {
         let server = MockServer::start().await;
@@ -144,7 +140,7 @@ mod tests {
                             .project("500".to_owned())
                             .meta()
                             .await
-                            .map_err(wrap_in_io_error)
+                            .map_err(std::io::Error::other)
                     }
                 })
             )
@@ -193,7 +189,7 @@ mod tests {
                         .project("403".to_owned())
                         .meta()
                         .await
-                        .map_err(wrap_in_io_error)
+                        .map_err(std::io::Error::other)
                 }
             })
             .await

@@ -69,7 +69,7 @@ enum LogFormat {
 }
 
 fn parse_max_jobs(s: &str) -> Result<usize, String> {
-    let value = s.parse().map_err(|e| format!("{}", e))?;
+    let value = s.parse().map_err(|e| format!("{e}"))?;
     if value >= 1 {
         Ok(value)
     } else {

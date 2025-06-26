@@ -35,7 +35,7 @@ use crate::{
     monitor::{MonitoredPackage, ObsMonitor, PackageCompletion, PackageMonitoringOptions},
     pipeline::{GeneratePipelineOptions, PipelineDownloadBinaries, generate_monitor_pipeline},
     prune::prune_branch,
-    retry::retry_request,
+    retry_request,
     upload::ObsDscUploader,
 };
 
@@ -359,15 +359,14 @@ impl ObsJobHandler {
             outputln!("Package unchanged at revision {}.", result.rev);
 
             if args.rebuild_if_unchanged {
-                retry_request(|| async {
+                retry_request!(
                     self.client
                         .project(build_info.project.clone())
                         .package(build_info.package.clone())
                         .rebuild()
                         .await
-                })
-                .await
-                .wrap_err("Failed to trigger rebuild")?;
+                        .wrap_err("Failed to trigger rebuild")
+                )?;
             } else {
                 // Clear out the history used to track endtime values. This is
                 // normally important to make sure the monitor doesn't

@@ -2,15 +2,15 @@ use std::collections::{HashMap, HashSet};
 
 use bytes::Bytes;
 use camino::{Utf8Path, Utf8PathBuf};
-use color_eyre::eyre::{Context, Report, Result, ensure, eyre};
+use color_eyre::eyre::{Context, Result, ensure, eyre};
 use derivative::*;
-use futures_util::{FutureExt, Stream, TryStreamExt};
+use futures_util::{Stream, TryStreamExt};
 use gitlab_runner::outputln;
 use md5::{Digest, Md5};
 use open_build_service_api as obs;
 use tracing::{Instrument, debug, info_span, instrument, trace};
 
-use crate::{artifacts::ArtifactDirectory, dsc::Dsc, retry::retry_request};
+use crate::{artifacts::ArtifactDirectory, dsc::Dsc, retry_request};
 
 type Md5String = String;
 
@@ -108,12 +108,12 @@ impl ObsDscUploader {
 
             let client_package = client.project(project.clone()).package(package.clone());
 
-            let result = retry_request(|| async { client_package.branch(&options).await }).await;
+            let result = retry_request!(client_package.branch(&options).await);
             if let Err(err) = result {
                 match err.downcast_ref::<obs::Error>() {
                     Some(obs::Error::ApiError(e)) if e.code == "not_missing" => {
                         options.missingok = false;
-                        retry_request(|| async { client_package.branch(&options).await }).await?;
+                        retry_request!(client_package.branch(&options).await)?;
                     }
                     _ => {
                         return Err(err);
@@ -153,13 +153,12 @@ impl ObsDscUploader {
         match client_package.list(None).await {
             Ok(dir) => Ok(dir),
             Err(obs::Error::ApiError(obs::ApiError { code, .. })) if code == "unknown_package" => {
-                retry_request(|| async {
+                retry_request!(
                     client_package
                         .create()
                         .await
                         .wrap_err("Failed to create missing package")
-                })
-                .await?;
+                )?;
                 client_package.list(None).await.map_err(|e| e.into())
             }
             Err(err) => Err(err.into()),
@@ -177,7 +176,7 @@ impl ObsDscUploader {
             if file.ends_with(".dsc") {
                 to_remove.insert(file.clone());
 
-                let contents = retry_request(|| async {
+                let contents = retry_request!(
                     collect_byte_stream(
                         self.client
                             .project(self.project.clone())
@@ -185,10 +184,9 @@ impl ObsDscUploader {
                             .source_file(file)
                             .await?,
                     )
+                    .instrument(info_span!("find_files_to_remove:download", %file))
                     .await
-                })
-                .instrument(info_span!("find_files_to_remove:download", %file))
-                .await?;
+                )?;
 
                 let _span = info_span!("find_files_to_remove:parse", %file);
                 let dsc: Dsc = rfc822_like::from_bytes(&contents[..])?;
@@ -204,14 +202,13 @@ impl ObsDscUploader {
 
     #[instrument(skip(self))]
     async fn get_latest_meta_md5(&self) -> Result<Md5String> {
-        let dir = retry_request(|| async {
+        let dir = retry_request!(
             self.client
                 .project(self.project.clone())
                 .package(self.package.clone())
                 .list_meta(None)
                 .await
-        })
-        .await?;
+        )?;
         let meta = dir
             .entries
             .into_iter()
@@ -230,19 +227,15 @@ impl ObsDscUploader {
         debug!("Uploading file");
         let file = artifacts.get_file(root.join(filename).as_str()).await?;
 
-        retry_request(|| {
-            file.try_clone().then(|file| async {
-                let file = file.wrap_err("Failed to clone file")?;
-                self.client
-                    .project(self.project.clone())
-                    .package(self.package.clone())
-                    .upload_for_commit(filename, file)
-                    .await
-                    .wrap_err("Failed to upload file")?;
-                Ok::<(), Report>(())
-            })
-        })
-        .await?;
+        retry_request!({
+            let file = file.try_clone().await.wrap_err("Failed to clone file")?;
+            self.client
+                .project(self.project.clone())
+                .package(self.package.clone())
+                .upload_for_commit(filename, file)
+                .await
+                .wrap_err("Failed to upload file")
+        })?;
 
         Ok(())
     }
@@ -262,7 +255,7 @@ impl ObsDscUploader {
 
         let mut attempt = 0usize;
         loop {
-            match retry_request(|| async {
+            match retry_request!({
                 self.client
                     .project(self.project.clone())
                     .package(self.package.clone())
@@ -273,9 +266,7 @@ impl ObsDscUploader {
                         },
                     )
                     .await
-            })
-            .await?
-            {
+            })? {
                 obs::CommitResult::Success(dir) => {
                     return dir.rev.ok_or_else(|| eyre!("Revision is empty"));
                 }
@@ -359,15 +350,14 @@ impl ObsDscUploader {
             )
         };
 
-        let current_dir = retry_request(|| async {
+        let current_dir = retry_request!({
             self.client
                 .project(self.project.clone())
                 .package(self.package.clone())
                 .list(Some(&rev))
+                .instrument(info_span!("upload_package:list-rev", %rev))
                 .await
-        })
-        .instrument(info_span!("upload_package:list-rev", %rev))
-        .await?;
+        })?;
 
         let build_srcmd5 = if let Some(link) = current_dir.linkinfo.into_iter().next() {
             link.xsrcmd5

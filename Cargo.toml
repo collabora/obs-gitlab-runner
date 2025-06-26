@@ -8,7 +8,6 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 async-trait = "0.1"
-backoff = { version = "0.4", features = ["tokio"] }
 base16ct = { version = "0.2", features = ["std"] }
 bytes = "1.10"
 camino = "1.1"
@@ -26,6 +25,7 @@ shell-words = "1.1"
 strum = { version = "0.27", features = ["derive"] }
 tempfile = "3.20"
 tokio = { version = "1.45", features = ["full"] }
+tokio-retry2 = { version = "0.5.7", features = ["jitter"] }
 tokio-util = { version = "0.7", features = ["full"] }
 tracing = "0.1"
 tracing-error = "0.2"

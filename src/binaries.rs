@@ -5,7 +5,7 @@ use futures_util::TryStreamExt;
 use open_build_service_api as obs;
 use tokio::{fs::File as AsyncFile, io::AsyncSeekExt};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
-use tracing::{info_span, instrument, Instrument};
+use tracing::{Instrument, info_span, instrument};
 
 use crate::retry::retry_request;
 

@@ -4,7 +4,7 @@ use color_eyre::eyre::{Result, WrapErr};
 use gitlab_runner::outputln;
 use open_build_service_api as obs;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info_span, instrument, Instrument};
+use tracing::{Instrument, debug, info_span, instrument};
 
 use crate::retry::retry_request;
 
@@ -74,11 +74,7 @@ async fn get_status(
             .await
     })
     .await
-    .wrap_err_with(|| {
-        format!(
-            "Failed to get status of {project}/{repo}/{arch}/{package}"
-        )
-    })?;
+    .wrap_err_with(|| format!("Failed to get status of {project}/{repo}/{arch}/{package}"))?;
     debug!(?status);
 
     Ok(status)

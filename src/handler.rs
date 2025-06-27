@@ -8,12 +8,13 @@ use std::{
 use async_trait::async_trait;
 use camino::Utf8PathBuf;
 use clap::{ArgAction, Parser, Subcommand};
-use color_eyre::eyre::{eyre, Context, Result};
+use color_eyre::eyre::{Context, Result, eyre};
 use derivative::*;
 use futures_util::StreamExt;
 use gitlab_runner::{
+    JobHandler, JobResult, Phase, UploadableFile,
     job::{Dependency, Job, Variable},
-    outputln, JobHandler, JobResult, Phase, UploadableFile,
+    outputln,
 };
 use open_build_service_api as obs;
 use serde::{Deserialize, Serialize};
@@ -25,14 +26,14 @@ use tokio_util::{
 use tracing::{debug, error, instrument, warn};
 
 use crate::{
-    artifacts::{save_to_tempfile, ArtifactDirectory},
+    artifacts::{ArtifactDirectory, save_to_tempfile},
     binaries::download_binaries,
     build_meta::{
         BuildHistoryRetrieval, BuildMeta, BuildMetaOptions, CommitBuildInfo, DisabledRepos,
         RepoArch,
     },
     monitor::{MonitoredPackage, ObsMonitor, PackageCompletion, PackageMonitoringOptions},
-    pipeline::{generate_monitor_pipeline, GeneratePipelineOptions, PipelineDownloadBinaries},
+    pipeline::{GeneratePipelineOptions, PipelineDownloadBinaries, generate_monitor_pipeline},
     prune::prune_branch,
     retry::retry_request,
     upload::ObsDscUploader,
@@ -750,8 +751,8 @@ mod tests {
     use open_build_service_mock::*;
     use rstest::rstest;
     use tempfile::TempDir;
-    use tracing::{instrument::WithSubscriber, Level};
-    use tracing_subscriber::{filter::Targets, prelude::*, Layer, Registry};
+    use tracing::{Level, instrument::WithSubscriber};
+    use tracing_subscriber::{Layer, Registry, filter::Targets, prelude::*};
     use zip::ZipArchive;
 
     use crate::{test_support::*, upload::compute_md5};

@@ -3,7 +3,7 @@ use std::time::Duration;
 use backoff::ExponentialBackoff;
 use futures_util::Future;
 
-use color_eyre::{eyre::Result, Report};
+use color_eyre::{Report, eyre::Result};
 use open_build_service_api as obs;
 use tracing::instrument;
 
@@ -65,8 +65,8 @@ mod tests {
     use open_build_service_api as obs;
     use rstest::*;
     use wiremock::{
-        matchers::{method, path_regex},
         Mock, MockServer, ResponseTemplate,
+        matchers::{method, path_regex},
     };
 
     use crate::test_support::*;

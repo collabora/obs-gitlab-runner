@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use color_eyre::eyre::{ensure, eyre, Context, Report, Result};
+use color_eyre::eyre::{Context, Report, Result, ensure, eyre};
 use derivative::*;
 use futures_util::stream::StreamExt;
 use gitlab_runner::outputln;

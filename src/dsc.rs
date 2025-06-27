@@ -1,6 +1,6 @@
 use serde::{
-    de::{IntoDeserializer, Visitor},
     Deserialize, Deserializer,
+    de::{IntoDeserializer, Visitor},
 };
 use std::marker::PhantomData;
 

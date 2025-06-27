@@ -2,13 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use bytes::Bytes;
 use camino::{Utf8Path, Utf8PathBuf};
-use color_eyre::eyre::{ensure, eyre, Context, Report, Result};
+use color_eyre::eyre::{Context, Report, Result, ensure, eyre};
 use derivative::*;
 use futures_util::{FutureExt, Stream, TryStreamExt};
 use gitlab_runner::outputln;
 use md5::{Digest, Md5};
 use open_build_service_api as obs;
-use tracing::{debug, info_span, instrument, trace, Instrument};
+use tracing::{Instrument, debug, info_span, instrument, trace};
 
 use crate::{artifacts::ArtifactDirectory, dsc::Dsc, retry::retry_request};
 

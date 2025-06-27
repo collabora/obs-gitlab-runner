@@ -4,14 +4,14 @@ use clap::Parser;
 use color_eyre::eyre::Result;
 use gitlab_runner::{GitlabLayer, RunnerBuilder};
 use strum::{Display, EnumString};
-use tracing::{error, info, Subscriber};
+use tracing::{Subscriber, error, info};
 use tracing_subscriber::{
+    Layer,
     filter::targets::Targets,
-    fmt::{format::DefaultFields, FormatEvent},
+    fmt::{FormatEvent, format::DefaultFields},
     prelude::*,
     registry::LookupSpan,
     util::SubscriberInitExt,
-    Layer,
 };
 use url::Url;
 

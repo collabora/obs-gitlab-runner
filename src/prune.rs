@@ -1,4 +1,4 @@
-use color_eyre::eyre::{ensure, Context, Result};
+use color_eyre::eyre::{Context, Result, ensure};
 use gitlab_runner::outputln;
 use open_build_service_api as obs;
 use tracing::info;

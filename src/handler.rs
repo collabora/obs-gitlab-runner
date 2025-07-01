@@ -13,7 +13,6 @@ use futures_util::StreamExt;
 use gitlab_runner::{
     JobHandler, JobResult, Phase, UploadableFile,
     job::{Dependency, Job, Variable},
-    outputln,
 };
 use open_build_service_api as obs;
 use serde::{Deserialize, Serialize};
@@ -38,6 +37,7 @@ use crate::{
         RepoArch,
     },
     monitor::{MonitoredPackage, ObsMonitor, PackageCompletion, PackageMonitoringOptions},
+    outputln,
     pipeline::{GeneratePipelineOptions, PipelineDownloadBinaries, generate_monitor_pipeline},
     prune::prune_branch,
     retry_request,
@@ -798,7 +798,7 @@ mod tests {
     use tracing_subscriber::{Layer, Registry, filter::Targets, prelude::*};
     use zip::ZipArchive;
 
-    use crate::{test_support::*, upload::compute_md5};
+    use crate::{logging::GitLabForwarder, test_support::*, upload::compute_md5};
 
     use super::*;
 
@@ -866,7 +866,7 @@ mod tests {
                             ),
                     )
                     .with(tracing_error::ErrorLayer::default())
-                    .with(layer),
+                    .with(GitLabForwarder::new(layer)),
             )
             .await
     }

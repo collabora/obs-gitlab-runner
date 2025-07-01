@@ -3,14 +3,13 @@ use std::time::Duration;
 use color_eyre::eyre::{Context, Report, Result, ensure, eyre};
 use derivative::*;
 use futures_util::stream::StreamExt;
-use gitlab_runner::outputln;
 use open_build_service_api as obs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tracing::{debug, instrument};
 
 use crate::{
     artifacts::{ArtifactDirectory, ArtifactReader, ArtifactWriter},
-    retry_request,
+    outputln, retry_request,
 };
 
 #[derive(Debug)]

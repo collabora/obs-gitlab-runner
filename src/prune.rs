@@ -1,9 +1,7 @@
 use color_eyre::eyre::{Context, Result, ensure};
-use gitlab_runner::outputln;
 use open_build_service_api as obs;
-use tracing::info;
 
-use crate::retry_request;
+use crate::{outputln, retry_request};
 
 async fn is_originally_branched(
     client: &obs::Client,
@@ -49,7 +47,7 @@ pub async fn prune_branch(
 
     if let Some(expected_rev) = expected_rev {
         if dir.rev.as_deref() != Some(expected_rev) {
-            info!(
+            outputln!(
                 "Latest revision is {}, skipping prune",
                 dir.rev.as_deref().unwrap_or("[unknown]")
             );

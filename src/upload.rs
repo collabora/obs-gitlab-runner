@@ -5,11 +5,10 @@ use camino::{Utf8Path, Utf8PathBuf};
 use color_eyre::eyre::{Context, Result, ensure, eyre};
 use derivative::*;
 use futures_util::{Stream, TryStreamExt};
-use gitlab_runner::outputln;
 use md5::{Digest, Md5};
 use open_build_service_api as obs;
 use tokio::io::AsyncSeekExt;
-use tracing::{Instrument, debug, info_span, instrument, trace};
+use tracing::{Instrument, debug, info, info_span, instrument, trace};
 
 use crate::{artifacts::ArtifactDirectory, dsc::Dsc, retry_request};
 
@@ -89,12 +88,9 @@ impl ObsDscUploader {
         let package = dsc.source.to_owned();
 
         if let Some(branch_to) = branch_to {
-            outputln!(
+            info!(
                 "Branching {}/{} -> {}/{}...",
-                project,
-                package,
-                branch_to,
-                package
+                project, package, branch_to, package
             );
 
             let mut options = obs::BranchOptions {
@@ -307,11 +303,9 @@ impl ObsDscUploader {
             .file_name()
             .ok_or_else(|| eyre!("Invalid dsc path: {}", self.dsc_path))?;
 
-        outputln!(
+        info!(
             "Uploading {} to {}/{}...",
-            dsc_filename,
-            self.project,
-            self.package
+            dsc_filename, self.project, self.package
         );
 
         let dir = self.ensure_package_exists_and_list().await?;

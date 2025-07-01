@@ -18,6 +18,7 @@ use url::Url;
 
 use crate::handler::{HandlerOptions, ObsJobHandler};
 
+mod actions;
 mod artifacts;
 mod binaries;
 mod build_meta;

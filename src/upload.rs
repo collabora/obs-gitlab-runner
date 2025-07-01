@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use camino::{Utf8Path, Utf8PathBuf};
 use color_eyre::eyre::{Context, Result, ensure, eyre};
 use derivative::*;
-use gitlab_runner::outputln;
 use md5::{Digest, Md5};
 use open_build_service_api as obs;
 use tracing::{Instrument, debug, info_span, instrument, trace};
@@ -11,7 +10,7 @@ use tracing::{Instrument, debug, info_span, instrument, trace};
 use crate::{
     artifacts::ArtifactDirectory,
     dsc::{Dsc, discard_pgp},
-    retry_request,
+    outputln, retry_request,
 };
 
 type Md5String = String;

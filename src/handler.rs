@@ -229,6 +229,55 @@ pub struct HandlerOptions {
     pub log_tail: u64,
 }
 
+struct GitLabArtifacts<'a> {
+    job: &'a Job,
+    artifacts: &'a mut HashMap<Utf8PathBuf, AsyncFile>,
+}
+
+#[async_trait]
+impl ArtifactDirectory for GitLabArtifacts<'_> {
+    #[instrument(skip(self, path), path = path.as_ref())]
+    async fn open(&self, path: impl AsRef<Utf8Path> + Send) -> Result<AsyncFile> {
+        let path = path.as_ref();
+
+        if let Some(file) = self.artifacts.get(path) {
+            let file = file.reopen().await.wrap_err("Failed to reopen artifact")?;
+            return Ok(file);
+        }
+
+        for dep in self.job.dependencies() {
+            if let Some(file) = check_for_artifact(dep, path).await? {
+                return Ok(file);
+            }
+        }
+
+        Err(MissingArtifact(path.to_owned()).into())
+    }
+
+    #[tracing::instrument(skip(self, path, func), path = path.as_ref())]
+    async fn save_with<
+        Ret: Send,
+        Err,
+        Fut: Future<Output = Result<Ret, Err>> + Send,
+        F: (FnOnce(AsyncFile) -> Fut) + Send,
+    >(
+        &mut self,
+        path: impl AsRef<Utf8Path> + Send,
+        func: F,
+    ) -> Result<Ret>
+    where
+        Report: From<Err>,
+    {
+        let mut file = async_tempfile().await?;
+        let ret = func(file.try_clone().await?).await?;
+
+        file.flush().await?;
+        self.artifacts
+            .insert(path.as_ref().to_owned(), file.reopen().await?);
+        Ok(ret)
+    }
+}
+
 pub struct ObsJobHandler {
     job: Job,
     client: obs::Client,
@@ -290,6 +339,11 @@ impl ObsJobHandler {
 
     #[instrument(skip(self))]
     async fn run_dput(&mut self, args: DputAction) -> Result<()> {
+        let mut artifacts = GitLabArtifacts {
+            job: &self.job,
+            artifacts: &mut self.artifacts,
+        };
+
         let branch_to = if !args.branch_to.is_empty() {
             Some(args.branch_to)
         } else {
@@ -306,7 +360,7 @@ impl ObsJobHandler {
             args.project.clone(),
             branch_to,
             args.dsc.as_str().into(),
-            self,
+            &artifacts,
         )
         .await?;
 
@@ -319,7 +373,10 @@ impl ObsJobHandler {
             enabled_repos: HashMap::new(),
         };
         debug!("Saving initial build info: {:?}", build_info);
-        build_info.clone().save(self, &args.build_info_out).await?;
+        build_info
+            .clone()
+            .save(&mut artifacts, &args.build_info_out)
+            .await?;
 
         let initial_build_meta = BuildMeta::get_if_package_exists(
             self.client.clone(),
@@ -335,7 +392,7 @@ impl ObsJobHandler {
         .await?;
         debug!(?initial_build_meta);
 
-        let result = uploader.upload_package(self).await?;
+        let result = uploader.upload_package(&artifacts).await?;
 
         // If we couldn't get the metadata before because the package didn't
         // exist yet, get it now but without history, so we leave the previous
@@ -393,14 +450,21 @@ impl ObsJobHandler {
             ..build_info
         };
         debug!("Saving complete build info: {:?}", build_info);
-        build_info.save(self, &args.build_info_out).await?;
+        build_info
+            .save(&mut artifacts, &args.build_info_out)
+            .await?;
 
         Ok(())
     }
 
     #[instrument(skip(self))]
     async fn run_generate_monitor(&mut self, args: GenerateMonitorAction) -> Result<()> {
-        let build_info_data = self.read_string(&args.build_info).await?;
+        let mut artifacts = GitLabArtifacts {
+            job: &self.job,
+            artifacts: &mut self.artifacts,
+        };
+
+        let build_info_data = artifacts.read_string(&args.build_info).await?;
         let build_info: ObsBuildInfo = serde_yaml::from_str(&build_info_data)
             .wrap_err("Failed to parse provided build info file")?;
 
@@ -433,7 +497,9 @@ impl ObsJobHandler {
             },
         )?;
 
-        self.write(&args.pipeline_out, pipeline.as_bytes()).await?;
+        artifacts
+            .write(&args.pipeline_out, pipeline.as_bytes())
+            .await?;
         outputln!("Wrote pipeline file '{}'.", args.pipeline_out);
 
         Ok(())
@@ -441,6 +507,11 @@ impl ObsJobHandler {
 
     #[instrument(skip(self))]
     async fn run_monitor(&mut self, args: MonitorAction) -> Result<()> {
+        let mut artifacts = GitLabArtifacts {
+            job: &self.job,
+            artifacts: &mut self.artifacts,
+        };
+
         let monitor = ObsMonitor::new(
             self.client.clone(),
             MonitoredPackage {
@@ -460,7 +531,7 @@ impl ObsJobHandler {
         debug!("Completed with: {:?}", completion);
 
         let mut log_file = monitor
-            .download_build_log(&args.build_log_out, self)
+            .download_build_log(&args.build_log_out, &mut artifacts)
             .await?;
 
         match completion {
@@ -507,13 +578,18 @@ impl ObsJobHandler {
 
     #[instrument(skip(self))]
     async fn run_download_binaries(&mut self, args: DownloadBinariesAction) -> Result<()> {
+        let mut artifacts = GitLabArtifacts {
+            job: &self.job,
+            artifacts: &mut self.artifacts,
+        };
+
         let binaries = download_binaries(
             self.client.clone(),
             &args.project,
             &args.package,
             &args.repository,
             &args.arch,
-            self,
+            &mut artifacts,
             &args.build_results_dir,
         )
         .await?;
@@ -529,8 +605,13 @@ impl ObsJobHandler {
             return Ok(());
         }
 
+        let artifacts = GitLabArtifacts {
+            job: &self.job,
+            artifacts: &mut self.artifacts,
+        };
+
         let build_info_data = if args.ignore_missing_build_info {
-            if let Some(build_info_data) = self
+            if let Some(build_info_data) = artifacts
                 .read_string(&args.build_info)
                 .await
                 .missing_artifact_to_none()?
@@ -544,7 +625,7 @@ impl ObsJobHandler {
                 return Ok(());
             }
         } else {
-            self.read_string(&args.build_info).await?
+            artifacts.read_string(&args.build_info).await?
         };
 
         let build_info: ObsBuildInfo = serde_yaml::from_str(&build_info_data)
@@ -695,50 +776,6 @@ async fn check_for_artifact(dep: Dependency<'_>, path: &Utf8Path) -> Result<Opti
     }
 
     Ok(None)
-}
-
-#[async_trait]
-impl ArtifactDirectory for ObsJobHandler {
-    #[instrument(skip(self, path), path = path.as_ref())]
-    async fn open(&self, path: impl AsRef<Utf8Path> + Send) -> Result<AsyncFile> {
-        let path = path.as_ref();
-
-        if let Some(file) = self.artifacts.get(path) {
-            let file = file.reopen().await.wrap_err("Failed to reopen artifact")?;
-            return Ok(file);
-        }
-
-        for dep in self.job.dependencies() {
-            if let Some(file) = check_for_artifact(dep, path).await? {
-                return Ok(file);
-            }
-        }
-
-        Err(MissingArtifact(path.to_owned()).into())
-    }
-
-    #[tracing::instrument(skip(self, path, func), path = path.as_ref())]
-    async fn save_with<
-        Ret: Send,
-        Err,
-        Fut: Future<Output = Result<Ret, Err>> + Send,
-        F: (FnOnce(AsyncFile) -> Fut) + Send,
-    >(
-        &mut self,
-        path: impl AsRef<Utf8Path> + Send,
-        func: F,
-    ) -> Result<Ret>
-    where
-        Report: From<Err>,
-    {
-        let mut file = async_tempfile().await?;
-        let ret = func(file.try_clone().await?).await?;
-
-        file.flush().await?;
-        self.artifacts
-            .insert(path.as_ref().to_owned(), file.reopen().await?);
-        Ok(ret)
-    }
 }
 
 #[cfg(test)]

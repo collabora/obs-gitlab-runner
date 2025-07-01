@@ -3,6 +3,7 @@ use std::{fmt, str::FromStr, sync::Arc};
 use clap::Parser;
 use color_eyre::eyre::Result;
 use gitlab_runner::{GitlabLayer, RunnerBuilder};
+use logging::GitLabForwarder;
 use strum::{Display, EnumString};
 use tracing::{Subscriber, error, info};
 use tracing_subscriber::{
@@ -17,11 +18,13 @@ use url::Url;
 
 use crate::handler::{HandlerOptions, ObsJobHandler};
 
+mod actions;
 mod artifacts;
 mod binaries;
 mod build_meta;
 mod dsc;
 mod handler;
+mod logging;
 mod monitor;
 mod pipeline;
 mod prune;
@@ -121,7 +124,7 @@ async fn main() {
 
     let registry = tracing_subscriber::registry()
         .with(tracing_error::ErrorLayer::default())
-        .with(layer);
+        .with(GitLabForwarder::new(layer));
 
     match args.log_format {
         LogFormat::Compact => registry

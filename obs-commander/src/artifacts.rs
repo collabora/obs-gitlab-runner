@@ -97,7 +97,6 @@ pub trait ArtifactDirectory: Send + Sync {
     }
 }
 
-#[cfg(test)]
 pub mod test_support {
     use std::collections::HashMap;
 

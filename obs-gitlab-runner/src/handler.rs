@@ -15,6 +15,15 @@ use gitlab_runner::{
     JobHandler, JobResult, Phase, UploadableFile,
     job::{Dependency, Job, Variable},
 };
+use obs_commander::{
+    actions::{
+        Actions, DEFAULT_BUILD_INFO, DEFAULT_BUILD_LOG, DownloadBinariesAction, DputAction,
+        FailedBuild, FlagSupportingExplicitValue, LOG_TAIL_2MB, MonitorAction, ObsBuildInfo,
+        PruneAction,
+    },
+    artifacts::{ArtifactDirectory, AsyncFileReopen, MissingArtifact, async_tempfile},
+    monitor::PackageMonitoringOptions,
+};
 use open_build_service_api as obs;
 use tokio::{fs::File as AsyncFile, io::AsyncWriteExt};
 use tokio_util::{
@@ -23,15 +32,8 @@ use tokio_util::{
 };
 use tracing::{error, info, instrument, warn};
 
-use crate::{
-    actions::{
-        Actions, DEFAULT_BUILD_INFO, DEFAULT_BUILD_LOG, DownloadBinariesAction, DputAction,
-        FailedBuild, FlagSupportingExplicitValue, LOG_TAIL_2MB, MonitorAction, ObsBuildInfo,
-        PruneAction,
-    },
-    artifacts::{ArtifactDirectory, AsyncFileReopen, MissingArtifact, async_tempfile},
-    monitor::PackageMonitoringOptions,
-    pipeline::{GeneratePipelineOptions, PipelineDownloadBinaries, generate_monitor_pipeline},
+use crate::pipeline::{
+    GeneratePipelineOptions, PipelineDownloadBinaries, generate_monitor_pipeline,
 };
 
 const DEFAULT_MONITOR_PIPELINE: &str = "obs.yml";
@@ -446,6 +448,8 @@ mod tests {
     use claims::*;
     use gitlab_runner::{GitlabLayer, Runner, RunnerBuilder};
     use gitlab_runner_mock::*;
+    use obs_commander::{build_meta::RepoArch, upload::compute_md5};
+    use obs_commander_test_support::*;
     use open_build_service_mock::*;
     use rstest::rstest;
     use tempfile::TempDir;
@@ -453,9 +457,7 @@ mod tests {
     use tracing_subscriber::{Layer, Registry, filter::Targets, prelude::*};
     use zip::ZipArchive;
 
-    use crate::{
-        build_meta::RepoArch, logging::GitLabForwarder, test_support::*, upload::compute_md5,
-    };
+    use crate::logging::GitLabForwarder;
 
     use super::*;
 
@@ -1570,7 +1572,7 @@ mod tests {
         )]
         test: Option<GenerateMonitorTimeoutLocation>,
     ) {
-        use crate::build_meta::CommitBuildInfo;
+        use obs_commander::build_meta::CommitBuildInfo;
 
         const TEST_MONITOR_TIMEOUT: &str = "10 minutes";
 

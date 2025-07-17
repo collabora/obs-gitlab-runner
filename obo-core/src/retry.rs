@@ -79,14 +79,13 @@ macro_rules! retry_request {
 mod tests {
     use claims::*;
     use futures_util::Future;
+    use obo_test_support::*;
     use open_build_service_api as obs;
     use rstest::*;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path_regex},
     };
-
-    use crate::test_support::*;
 
     use super::*;
 

@@ -80,9 +80,10 @@ mod tests {
     use std::time::SystemTime;
 
     use claims::*;
+    use obo_test_support::*;
     use open_build_service_mock::*;
 
-    use crate::{artifacts::test_support::MockArtifactDirectory, test_support::*};
+    use crate::artifacts::test_support::MockArtifactDirectory;
 
     use super::*;
 

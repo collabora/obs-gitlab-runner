@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
 use color_eyre::eyre::{Context, Result};
+use obo_core::{
+    actions::{DownloadBinariesAction, MonitorAction},
+    build_meta::{CommitBuildInfo, RepoArch},
+};
 use serde::Serialize;
 use tracing::instrument;
-
-use crate::build_meta::{CommitBuildInfo, RepoArch};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PipelineDownloadBinaries {
@@ -43,16 +45,6 @@ struct JobSpec {
     rules: Option<serde_yaml::Sequence>,
 }
 
-fn generate_command(command_name: String, args: &[(&str, String)]) -> String {
-    let mut command = vec![command_name];
-
-    for (arg, value) in args {
-        command.extend_from_slice(&[format!("--{arg}"), shell_words::quote(value).into_owned()]);
-    }
-
-    command.join(" ")
-}
-
 #[instrument]
 pub fn generate_monitor_pipeline(
     project: &str,
@@ -74,34 +66,34 @@ pub fn generate_monitor_pipeline(
         let mut script = vec![];
         let mut artifact_paths = vec![];
 
-        let common_args = vec![
-            ("project", project.to_owned()),
-            ("package", package.to_owned()),
-            ("repository", repo.to_owned()),
-            ("arch", arch.to_owned()),
-        ];
-
-        let mut monitor_args = vec![
-            ("rev", rev.to_owned()),
-            ("srcmd5", srcmd5.to_owned()),
-            ("build-log-out", options.build_log_out.clone()),
-        ];
-        if let Some(endtime) = &info.prev_endtime_for_commit {
-            monitor_args.push(("prev-endtime-for-commit", endtime.to_string()));
-        }
-        monitor_args.extend_from_slice(&common_args);
-        script.push(generate_command("monitor".to_owned(), &monitor_args));
+        script.push(
+            MonitorAction {
+                project: project.to_owned(),
+                package: package.to_owned(),
+                repository: repo.to_owned(),
+                arch: arch.to_owned(),
+                rev: rev.to_owned(),
+                srcmd5: srcmd5.to_owned(),
+                build_log_out: options.build_log_out.clone(),
+                prev_endtime_for_commit: info.prev_endtime_for_commit,
+            }
+            .generate_command(),
+        );
         artifact_paths.push(options.build_log_out.clone());
 
         if let PipelineDownloadBinaries::OnSuccess { build_results_dir } =
             &options.download_binaries
         {
-            let mut download_args = vec![("build-results-dir", build_results_dir.clone())];
-            download_args.extend_from_slice(&common_args);
-            script.push(generate_command(
-                "download-binaries".to_owned(),
-                &download_args,
-            ));
+            script.push(
+                DownloadBinariesAction {
+                    project: project.to_owned(),
+                    package: package.to_owned(),
+                    repository: repo.to_owned(),
+                    arch: arch.to_owned(),
+                    build_results_dir: build_results_dir.into(),
+                }
+                .generate_command(),
+            );
             artifact_paths.push(build_results_dir.clone());
         }
 

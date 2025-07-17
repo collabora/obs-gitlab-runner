@@ -14,15 +14,7 @@ use gitlab_runner::{
     JobHandler, JobResult, Phase, UploadableFile,
     job::{Dependency, Job, Variable},
 };
-use open_build_service_api as obs;
-use tokio::fs::File as AsyncFile;
-use tokio_util::{
-    compat::{Compat, TokioAsyncReadCompatExt},
-    io::ReaderStream,
-};
-use tracing::{error, instrument, warn};
-
-use crate::{
+use obo_core::{
     actions::{
         Actions, DEFAULT_BUILD_INFO, DEFAULT_BUILD_LOG, DownloadBinariesAction, DputAction,
         FailedBuild, FlagSupportingExplicitValue, LOG_TAIL_2MB, MonitorAction, ObsBuildInfo,
@@ -31,7 +23,17 @@ use crate::{
     artifacts::{ArtifactDirectory, ArtifactReader, ArtifactWriter, MissingArtifact, SaveCallback},
     monitor::PackageMonitoringOptions,
     outputln,
-    pipeline::{GeneratePipelineOptions, PipelineDownloadBinaries, generate_monitor_pipeline},
+};
+use open_build_service_api as obs;
+use tokio::fs::File as AsyncFile;
+use tokio_util::{
+    compat::{Compat, TokioAsyncReadCompatExt},
+    io::ReaderStream,
+};
+use tracing::{error, instrument, warn};
+
+use crate::pipeline::{
+    GeneratePipelineOptions, PipelineDownloadBinaries, generate_monitor_pipeline,
 };
 
 const DEFAULT_MONITOR_PIPELINE: &str = "obs.yml";
@@ -447,6 +449,8 @@ mod tests {
     use claims::*;
     use gitlab_runner::{GitlabLayer, Runner, RunnerBuilder};
     use gitlab_runner_mock::*;
+    use obo_core::{build_meta::RepoArch, upload::compute_md5};
+    use obo_test_support::*;
     use open_build_service_mock::*;
     use rstest::rstest;
     use tempfile::TempDir;
@@ -454,9 +458,7 @@ mod tests {
     use tracing_subscriber::{Layer, Registry, filter::Targets, prelude::*};
     use zip::ZipArchive;
 
-    use crate::{
-        build_meta::RepoArch, logging::GitLabForwarder, test_support::*, upload::compute_md5,
-    };
+    use crate::logging::GitLabForwarder;
 
     use super::*;
 
@@ -1567,7 +1569,7 @@ mod tests {
         )]
         test: Option<GenerateMonitorTimeoutLocation>,
     ) {
-        use crate::build_meta::CommitBuildInfo;
+        use obo_core::build_meta::CommitBuildInfo;
 
         const TEST_MONITOR_TIMEOUT: &str = "10 minutes";
 

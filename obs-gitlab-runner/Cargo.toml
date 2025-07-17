@@ -1,0 +1,42 @@
+[package]
+name = "obs-gitlab-runner"
+version = "0.1.8"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+async-trait.workspace = true
+camino.workspace = true
+clap.workspace = true
+color-eyre.workspace = true
+derivative.workspace = true
+futures-util.workspace = true
+gitlab-runner = "0.3.0-rc1"
+# gitlab-runner = { path = "../gitlab-runner-rs/gitlab-runner" }
+obo-core = { path = "../obo-core" }
+obo-test-support = { path = "../obo-test-support" }
+open-build-service-api.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+shellexpand = "3.1"
+shell-words.workspace = true
+strum = { version = "0.27", features = ["derive"] }
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-error = "0.2"
+tracing-subscriber = { version = "0.3", features = ["default", "json"] }
+url = "2.5"
+
+[dev-dependencies]
+claims.workspace = true
+gitlab-runner-mock = "0.2.1"
+# gitlab-runner-mock = { path = "../gitlab-runner-rs/gitlab-runner-mock" }
+open-build-service-mock.workspace = true
+rstest.workspace = true
+wiremock.workspace = true
+zip = "5.1"

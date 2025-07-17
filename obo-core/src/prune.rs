@@ -95,9 +95,8 @@ mod tests {
     use std::time::SystemTime;
 
     use claims::*;
+    use obo_test_support::*;
     use open_build_service_mock::*;
-
-    use crate::test_support::*;
 
     use super::*;
 

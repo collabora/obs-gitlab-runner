@@ -1,0 +1,9 @@
+[package]
+name = "obo-test-support"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+open-build-service-api.workspace = true
+open-build-service-mock.workspace = true

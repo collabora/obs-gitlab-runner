@@ -18,21 +18,9 @@ use url::Url;
 
 use crate::handler::{HandlerOptions, ObsJobHandler};
 
-mod actions;
-mod artifacts;
-mod binaries;
-mod build_meta;
-mod dsc;
 mod handler;
 mod logging;
-mod monitor;
 mod pipeline;
-mod prune;
-mod retry;
-mod upload;
-
-#[cfg(test)]
-mod test_support;
 
 #[derive(Debug, Clone)]
 struct TargetsArg {

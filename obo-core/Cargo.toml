@@ -1,0 +1,37 @@
+[package]
+name = "obo-core"
+description = "OBS Build Orchestrator — core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+async-trait.workspace = true
+base16ct = { version = "0.2", features = ["std"] }
+bytes = "1.10"
+camino.workspace = true
+clap.workspace = true
+color-eyre.workspace = true
+derivative.workspace = true
+futures-util.workspace = true
+md-5 = "0.10"
+obo-test-support = { path = "../obo-test-support" }
+open-build-service-api.workspace = true
+reqwest = "0.12"
+rfc822-like = "0.2"
+serde.workspace = true
+serde_yaml.workspace = true
+shell-words.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-retry2 = { version = "0.6.0", features = ["jitter"] }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+claims.workspace = true
+rstest.workspace = true
+open-build-service-mock.workspace = true
+wiremock.workspace = true
+

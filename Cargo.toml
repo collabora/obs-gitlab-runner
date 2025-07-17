@@ -1,50 +1,30 @@
-[package]
-name = "obs-gitlab-runner"
-version = "0.1.8"
-edition = "2024"
-license = "MIT OR Apache-2.0"
+[workspace]
+resolver = "3"
+members = [
+  "obo-core",
+  "obo-test-support",
+  "obs-gitlab-runner"
+]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
+[workspace.dependencies]
 async-trait = "0.1"
-base16ct = { version = "0.2", features = ["std"] }
-bytes = "1.10"
 camino = "1.1"
+claims = "0.8"
 clap = { version = "4.5", features = ["default", "derive", "env"] }
 color-eyre = "0.6"
 derivative = "2.2"
 futures-util = "0.3"
-md-5 = "0.10"
-reqwest = "0.12"
-rfc822-like = "0.2"
+open-build-service-api = { git = "https://github.com/collabora/open-build-service-rs" }
+# open-build-service-api = { path = "../open-build-service-rs/open-build-service-api" }
+open-build-service-mock = { git = "https://github.com/collabora/open-build-service-rs" }
+# open-build-service-mock = { path = "../open-build-service-rs/open-build-service-api" }
+rstest = "0.26"
 serde = "1.0"
 serde_yaml = "0.9"
-shellexpand = "3.1"
 shell-words = "1.1"
-strum = { version = "0.27", features = ["derive"] }
 tempfile = "3.20"
+thiserror = "2.0"
 tokio = { version = "1.45", features = ["full"] }
-tokio-retry2 = { version = "0.6.0", features = ["jitter"] }
 tokio-util = { version = "0.7", features = ["full"] }
 tracing = "0.1"
-tracing-error = "0.2"
-tracing-subscriber = { version = "0.3", features = ["default", "json"] }
-url = "2.5"
-
-gitlab-runner = "0.3.0-rc1"
-# gitlab-runner = { path = "../gitlab-runner-rs/gitlab-runner" }
-open-build-service-api = { git = "https://github.com/collabora/open-build-service-rs" }
-thiserror = "2.0.12"
-# open-build-service-api = { path = "../open-build-service-rs/open-build-service-api" }
-
-[dev-dependencies]
-claims = "0.8"
-rstest = "0.26"
 wiremock = "0.6"
-zip = "5.1"
-
-gitlab-runner-mock = "0.2.1"
-# gitlab-runner-mock = { path = "../gitlab-runner-rs/gitlab-runner-mock" }
-open-build-service-mock = { git = "https://github.com/collabora/open-build-service-rs" }
-# open-build-service-mock = { path = "../open-build-service-rs/open-build-service-mock" }

@@ -1,7 +1,8 @@
 use gitlab_runner::GitlabLayer;
+use obo_core::logging::{get_event_message, is_output_field_set_in_event};
 use tracing::{
     Event, Level, Metadata, Subscriber,
-    field::{self, Field, FieldSet},
+    field::FieldSet,
     span::{Attributes, Id},
     subscriber::Interest,
 };
@@ -12,37 +13,9 @@ use tracing_subscriber::{
     registry::LookupSpan,
 };
 
-struct OutputTester(bool);
-
-impl field::Visit for OutputTester {
-    fn record_bool(&mut self, field: &field::Field, value: bool) {
-        if field.name() == "obs_gitlab_runner.output" {
-            self.0 = value
-        }
-    }
-
-    fn record_debug(&mut self, _field: &field::Field, _value: &dyn std::fmt::Debug) {}
-}
-
-struct MessageExtractor(Option<String>);
-
-impl field::Visit for MessageExtractor {
-    fn record_str(&mut self, field: &Field, value: &str) {
-        if field.name() == "message" {
-            self.0 = Some(value.to_owned());
-        }
-    }
-
-    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "message" {
-            self.0 = Some(format!("{value:?}"));
-        }
-    }
-}
-
 // This mostly wraps a standard GitlabLayer, but it bypasses the filter to pass
-// through any events with `obs_gitlab_runner.output` set, rewriting them to
-// instead use `gitlab.output`.
+// through any events with TRACING_FIELD set set, rewriting them to instead use
+// `gitlab.output`.
 pub struct GitLabForwarder<S: Subscriber, F: Filter<S>>(Filtered<GitlabLayer, F, S>);
 
 impl<S: Subscriber + Send + Sync + 'static + for<'span> LookupSpan<'span>, F: Filter<S> + 'static>
@@ -50,6 +23,7 @@ impl<S: Subscriber + Send + Sync + 'static + for<'span> LookupSpan<'span>, F: Fi
 {
     pub fn new(inner: Filtered<GitlabLayer, F, S>) -> Filtered<Self, Targets, S> {
         GitLabForwarder(inner).with_filter(Targets::new().with_targets([
+            ("obo_core", Level::TRACE),
             ("obs_gitlab_runner", Level::TRACE),
             // This target is used to inject the current job ID, which
             // gitlab-runner needs to actually send the logs out.
@@ -99,17 +73,13 @@ impl<S: Subscriber + Send + Sync + 'static + for<'span> LookupSpan<'span>, F: Fi
     }
 
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
-        let mut visitor = OutputTester(false);
-        event.record(&mut visitor);
-        if !visitor.0 {
+        if !is_output_field_set_in_event(event) {
             // No special behavior needed, so just forward it as-is.
             self.0.on_event(event, ctx);
             return;
         }
 
-        let mut visitor = MessageExtractor(None);
-        event.record(&mut visitor);
-        let Some(message) = visitor.0 else {
+        let Some(message) = get_event_message(event) else {
             return;
         };
 
@@ -156,11 +126,4 @@ impl<S: Subscriber + Send + Sync + 'static + for<'span> LookupSpan<'span>, F: Fi
     fn on_id_change(&self, old: &Id, new: &Id, ctx: Context<'_, S>) {
         self.0.on_id_change(old, new, ctx);
     }
-}
-
-#[macro_export]
-macro_rules! outputln {
-    ($($args:tt)*) => {
-        ::tracing::trace!(obs_gitlab_runner.output = true, $($args)*)
-    };
 }

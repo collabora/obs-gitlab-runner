@@ -42,6 +42,27 @@ impl FlagSupportingExplicitValue for clap::Arg {
     }
 }
 
+#[derive(Debug)]
+struct CommandBuilder {
+    args: Vec<String>,
+}
+
+impl CommandBuilder {
+    fn new(name: String) -> Self {
+        Self { args: vec![name] }
+    }
+
+    fn add(&mut self, arg: &str, value: &str) -> &mut Self {
+        self.args
+            .push(format!("--{arg}={}", shell_words::quote(value)));
+        self
+    }
+
+    fn build(self) -> String {
+        self.args.join(" ")
+    }
+}
+
 #[derive(Parser, Debug)]
 pub struct DputAction {
     pub project: String,
@@ -74,6 +95,24 @@ pub struct MonitorAction {
     pub build_log_out: String,
 }
 
+impl MonitorAction {
+    pub fn generate_command(&self) -> String {
+        let mut builder = CommandBuilder::new("monitor".to_owned());
+        builder
+            .add("project", &self.project)
+            .add("package", &self.package)
+            .add("rev", &self.rev)
+            .add("srcmd5", &self.srcmd5)
+            .add("repository", &self.repository)
+            .add("arch", &self.arch)
+            .add("build-log-out", &self.build_log_out);
+        if let Some(endtime) = &self.prev_endtime_for_commit {
+            builder.add("prev-endtime-for-commit", &endtime.to_string());
+        }
+        builder.build()
+    }
+}
+
 #[derive(Parser, Debug)]
 pub struct DownloadBinariesAction {
     #[clap(long)]
@@ -86,6 +125,19 @@ pub struct DownloadBinariesAction {
     pub arch: String,
     #[clap(long)]
     pub build_results_dir: Utf8PathBuf,
+}
+
+impl DownloadBinariesAction {
+    pub fn generate_command(&self) -> String {
+        let mut builder = CommandBuilder::new("download-binaries".to_owned());
+        builder
+            .add("project", &self.project)
+            .add("package", &self.package)
+            .add("repository", &self.repository)
+            .add("arch", &self.arch)
+            .add("build-results-dir", self.build_results_dir.as_str());
+        builder.build()
+    }
 }
 
 #[derive(Parser, Debug)]

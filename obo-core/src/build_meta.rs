@@ -265,10 +265,9 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use claims::*;
+    use obo_test_support::*;
     use open_build_service_mock::*;
     use rstest::rstest;
-
-    use crate::test_support::*;
 
     use super::*;
 

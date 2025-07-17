@@ -43,6 +43,7 @@ impl<S: Subscriber + Send + Sync + 'static + for<'span> LookupSpan<'span>, F: Fi
 {
     pub fn new(inner: Filtered<GitlabLayer, F, S>) -> Filtered<Self, Targets, S> {
         GitLabForwarder(inner).with_filter(Targets::new().with_targets([
+            ("obs_commander", Level::INFO),
             ("obs_gitlab_runner", Level::INFO),
             // This target is used to inject the current job ID, which
             // gitlab-runner needs to actually send the logs out.

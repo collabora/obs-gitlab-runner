@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
 use color_eyre::eyre::{Context, Result};
+use obs_commander::build_meta::{CommitBuildInfo, RepoArch};
 use serde::Serialize;
 use tracing::instrument;
-
-use crate::build_meta::{CommitBuildInfo, RepoArch};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PipelineDownloadBinaries {

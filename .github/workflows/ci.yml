@@ -16,9 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master # avoid the tag here to prevent dependabot from updating it
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: "1.83"
+          toolchain: "1.88"
       - run: cargo check --all-targets --all-features
 
   fmt:
@@ -26,9 +26,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master # avoid the tag here to prevent dependabot from updating it
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: "1.83"
+          toolchain: "1.88"
           components: rustfmt
       - run: cargo fmt --all --check
 
@@ -37,9 +37,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master # avoid the tag here to prevent dependabot from updating it
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: "1.83"
+          toolchain: "1.88"
       - run: cargo test --all-targets --all-features
 
   clippy:
@@ -47,9 +47,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master # avoid the tag here to prevent dependabot from updating it
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: "1.83"
+          toolchain: "1.88"
           components: clippy
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -59,8 +59,9 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
+          toolchain: stable
           components: clippy
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -69,9 +70,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: clippy
+          toolchain: nightly
       - run: cargo check -Z direct-minimal-versions
 
   docker-image:

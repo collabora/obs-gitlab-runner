@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs::File};
+use std::collections::HashMap;
 
 use color_eyre::eyre::{Context, Result};
 use serde::Serialize;
@@ -47,7 +47,7 @@ fn generate_command(command_name: String, args: &[(&str, String)]) -> String {
     let mut command = vec![command_name];
 
     for (arg, value) in args {
-        command.extend_from_slice(&[format!("--{}", arg), shell_words::quote(value).into_owned()]);
+        command.extend_from_slice(&[format!("--{arg}"), shell_words::quote(value).into_owned()]);
     }
 
     command.join(" ")
@@ -61,7 +61,7 @@ pub fn generate_monitor_pipeline(
     srcmd5: &str,
     enabled_repos: &HashMap<RepoArch, CommitBuildInfo>,
     options: GeneratePipelineOptions,
-) -> Result<File> {
+) -> Result<String> {
     let rules: Option<serde_yaml::Sequence> = options
         .rules
         .as_deref()
@@ -128,9 +128,5 @@ pub fn generate_monitor_pipeline(
         );
     }
 
-    // TODO: check this blocking file write & any others
-    let mut file = tempfile::tempfile().wrap_err("Failed to create temp file")?;
-    serde_yaml::to_writer(&mut file, &jobs).wrap_err("Failed to serialize jobs")?;
-
-    Ok(file)
+    serde_yaml::to_string(&jobs).wrap_err("Failed to serialize jobs")
 }

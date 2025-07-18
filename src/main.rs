@@ -2,26 +2,29 @@ use std::{fmt, str::FromStr, sync::Arc};
 
 use clap::Parser;
 use color_eyre::eyre::Result;
-use gitlab_runner::Runner;
+use gitlab_runner::{GitlabLayer, RunnerBuilder};
+use logging::GitLabForwarder;
 use strum::{Display, EnumString};
-use tracing::{error, info, Subscriber};
+use tracing::{Subscriber, error, info};
 use tracing_subscriber::{
+    Layer,
     filter::targets::Targets,
-    fmt::{format::DefaultFields, FormatEvent},
+    fmt::{FormatEvent, format::DefaultFields},
     prelude::*,
     registry::LookupSpan,
     util::SubscriberInitExt,
-    Layer,
 };
 use url::Url;
 
 use crate::handler::{HandlerOptions, ObsJobHandler};
 
+mod actions;
 mod artifacts;
 mod binaries;
 mod build_meta;
 mod dsc;
 mod handler;
+mod logging;
 mod monitor;
 mod pipeline;
 mod prune;
@@ -31,6 +34,7 @@ mod upload;
 #[cfg(test)]
 mod test_support;
 
+#[derive(Debug, Clone)]
 struct TargetsArg {
     targets: Targets,
     parsed_from: String,
@@ -59,7 +63,7 @@ impl fmt::Display for TargetsArg {
     }
 }
 
-#[derive(Display, EnumString)]
+#[derive(Debug, Clone, Display, EnumString)]
 #[strum(serialize_all = "lowercase")]
 enum LogFormat {
     Pretty,
@@ -68,7 +72,7 @@ enum LogFormat {
 }
 
 fn parse_max_jobs(s: &str) -> Result<usize, String> {
-    let value = s.parse().map_err(|e| format!("{}", e))?;
+    let value = s.parse().map_err(|e| format!("{e}"))?;
     if value >= 1 {
         Ok(value)
     } else {
@@ -86,7 +90,12 @@ struct Args {
     log: TargetsArg,
     #[clap(long, env = "OBS_RUNNER_LOG_FORMAT", default_value_t = LogFormat::Pretty)]
     log_format: LogFormat,
-    #[clap(long, env = "OBS_RUNNER_MAX_JOBS", default_value_t = 64, parse(try_from_str=parse_max_jobs))]
+    #[clap(
+        long,
+        env = "OBS_RUNNER_MAX_JOBS",
+        default_value_t = 64,
+        value_parser(parse_max_jobs)
+    )]
     max_jobs: usize,
     #[clap(long, env = "OBS_RUNNER_DEFAULT_MONITOR_JOB_TIMEOUT")]
     default_monitor_job_timeout: Option<String>,
@@ -106,12 +115,16 @@ where
 async fn main() {
     let args = Args::parse();
     let temp = tempfile::tempdir().expect("Failed to create temporary directory");
-    let (mut runner, layer) =
-        Runner::new_with_layer(args.server, args.token, temp.path().to_owned());
+
+    let (layer, jobs) = GitlabLayer::new();
+
+    let mut runner = RunnerBuilder::new(args.server, args.token, temp.path().to_owned(), jobs)
+        .build()
+        .await;
 
     let registry = tracing_subscriber::registry()
         .with(tracing_error::ErrorLayer::default())
-        .with(layer);
+        .with(GitLabForwarder::new(layer));
 
     match args.log_format {
         LogFormat::Compact => registry

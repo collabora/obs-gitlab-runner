@@ -4,7 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::{Result, eyre};
 use tokio::fs::File as AsyncFile;
 use tracing::instrument;
 

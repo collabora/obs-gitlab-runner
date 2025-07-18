@@ -47,7 +47,7 @@ fn generate_command(command_name: String, args: &[(&str, String)]) -> String {
     let mut command = vec![command_name];
 
     for (arg, value) in args {
-        command.extend_from_slice(&[format!("--{}", arg), shell_words::quote(value).into_owned()]);
+        command.extend_from_slice(&[format!("--{arg}"), shell_words::quote(value).into_owned()]);
     }
 
     command.join(" ")

@@ -1,4 +1,4 @@
-FROM rust:1.75.0-slim-bookworm AS build
+FROM rust:1.88.0-slim-bookworm AS build
 ARG DEBIAN_FRONTEND=noninteractive
 
 ADD . /app

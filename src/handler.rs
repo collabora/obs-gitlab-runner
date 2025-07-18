@@ -1,39 +1,46 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
-    fs::File,
-    io::SeekFrom,
+    future::Future,
+    io::{Seek, SeekFrom},
 };
 
 use async_trait::async_trait;
-use camino::Utf8PathBuf;
-use clap::{Parser, Subcommand};
-use color_eyre::eyre::{eyre, Context, Result};
+use camino::{Utf8Path, Utf8PathBuf};
+use clap::{ArgAction, Parser, Subcommand};
+use color_eyre::eyre::{Context, Report, Result, eyre};
 use derivative::*;
 use futures_util::StreamExt;
 use gitlab_runner::{
+    JobHandler, JobResult, Phase, UploadableFile,
     job::{Dependency, Job, Variable},
     outputln,
-    uploader::Uploader,
-    JobHandler, JobResult, Phase,
 };
 use open_build_service_api as obs;
 use serde::{Deserialize, Serialize};
-use tokio::{fs::File as AsyncFile, io::AsyncSeekExt};
-use tokio_util::{compat::FuturesAsyncWriteCompatExt, io::ReaderStream};
-use tracing::{debug, error, instrument};
+use tokio::{
+    fs::File as AsyncFile,
+    io::{AsyncSeekExt, AsyncWriteExt},
+};
+use tokio_util::{
+    compat::{Compat, TokioAsyncReadCompatExt},
+    io::ReaderStream,
+};
+use tracing::{debug, error, instrument, warn};
 
 use crate::{
-    artifacts::{save_to_tempfile, ArtifactDirectory},
+    artifacts::{
+        ArtifactDirectory, AsyncFileReopen, MissingArtifact, MissingArtifactToNone, async_tempfile,
+    },
     binaries::download_binaries,
     build_meta::{
         BuildHistoryRetrieval, BuildMeta, BuildMetaOptions, CommitBuildInfo, DisabledRepos,
         RepoArch,
     },
     monitor::{MonitoredPackage, ObsMonitor, PackageCompletion, PackageMonitoringOptions},
-    pipeline::{generate_monitor_pipeline, GeneratePipelineOptions, PipelineDownloadBinaries},
+    pipeline::{GeneratePipelineOptions, PipelineDownloadBinaries, generate_monitor_pipeline},
     prune::prune_branch,
-    retry::retry_request,
+    retry_request,
     upload::ObsDscUploader,
 };
 
@@ -49,13 +56,14 @@ trait FlagSupportingExplicitValue {
     fn flag_supporting_explicit_value(self) -> Self;
 }
 
-impl FlagSupportingExplicitValue for clap::Arg<'_> {
+impl FlagSupportingExplicitValue for clap::Arg {
     fn flag_supporting_explicit_value(self) -> Self {
-        self.min_values(0)
+        self.num_args(0..=1)
             .require_equals(true)
             .required(false)
             .default_value("false")
             .default_missing_value("true")
+            .action(ArgAction::Set)
     }
 }
 
@@ -65,9 +73,9 @@ struct DputAction {
     dsc: String,
     #[clap(long, default_value = "")]
     branch_to: String,
-    #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned())]
-    build_info_out: String,
-    #[clap(long, parse(try_from_str), flag_supporting_explicit_value())]
+    #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned().into())]
+    build_info_out: Utf8PathBuf,
+    #[clap(long, flag_supporting_explicit_value())]
     rebuild_if_unchanged: bool,
 }
 
@@ -130,9 +138,9 @@ struct DownloadBinariesAction {
 struct PruneAction {
     #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned())]
     build_info: String,
-    #[clap(long, parse(try_from_str), flag_supporting_explicit_value())]
+    #[clap(long, flag_supporting_explicit_value())]
     ignore_missing_build_info: bool,
-    #[clap(long, parse(try_from_str), flag_supporting_explicit_value())]
+    #[clap(long, flag_supporting_explicit_value())]
     only_if_job_unsuccessful: bool,
 }
 
@@ -140,9 +148,9 @@ struct PruneAction {
 #[derive(Parser, Debug)]
 struct EchoAction {
     args: Vec<String>,
-    #[clap(long, parse(try_from_str), flag_supporting_explicit_value())]
+    #[clap(long, flag_supporting_explicit_value())]
     fail: bool,
-    #[clap(long, parse(try_from_str), flag_supporting_explicit_value())]
+    #[clap(long, flag_supporting_explicit_value())]
     uppercase: bool,
     #[clap(long, default_value = " ")]
     sep: String,
@@ -178,11 +186,19 @@ struct ObsBuildInfo {
 }
 
 impl ObsBuildInfo {
-    #[instrument]
-    fn save(&self) -> Result<File> {
-        let mut file = tempfile::tempfile().wrap_err("Failed to create build info file")?;
-        serde_yaml::to_writer(&mut file, self).wrap_err("Failed to write build info file")?;
-        Ok(file)
+    #[instrument(skip(artifacts))]
+    async fn save(self, artifacts: &mut impl ArtifactDirectory, path: &Utf8Path) -> Result<()> {
+        artifacts
+            .save_with(path, async |file| {
+                let mut file = file.into_std().await;
+                tokio::task::spawn_blocking(move || {
+                    serde_yaml::to_writer(&mut file, &self)
+                        .wrap_err("Failed to write build info file")
+                })
+                .await??;
+                Ok::<_, Report>(())
+            })
+            .await
     }
 }
 
@@ -191,7 +207,7 @@ struct FailedBuild;
 
 impl std::fmt::Display for FailedBuild {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -219,7 +235,7 @@ pub struct ObsJobHandler {
     options: HandlerOptions,
 
     script_failed: bool,
-    artifacts: HashMap<String, AsyncFile>,
+    artifacts: HashMap<Utf8PathBuf, AsyncFile>,
 }
 
 impl ObsJobHandler {
@@ -303,14 +319,7 @@ impl ObsJobHandler {
             enabled_repos: HashMap::new(),
         };
         debug!("Saving initial build info: {:?}", build_info);
-
-        let build_info_2 = build_info.clone();
-        let build_info_file = tokio::task::spawn_blocking(move || build_info_2.save()).await??;
-
-        self.artifacts.insert(
-            args.build_info_out.clone(),
-            AsyncFile::from_std(build_info_file),
-        );
+        build_info.clone().save(self, &args.build_info_out).await?;
 
         let initial_build_meta = BuildMeta::get_if_package_exists(
             self.client.clone(),
@@ -356,15 +365,14 @@ impl ObsJobHandler {
             outputln!("Package unchanged at revision {}.", result.rev);
 
             if args.rebuild_if_unchanged {
-                retry_request(|| async {
+                retry_request!(
                     self.client
                         .project(build_info.project.clone())
                         .package(build_info.package.clone())
                         .rebuild()
                         .await
-                })
-                .await
-                .wrap_err("Failed to trigger rebuild")?;
+                        .wrap_err("Failed to trigger rebuild")
+                )?;
             } else {
                 // Clear out the history used to track endtime values. This is
                 // normally important to make sure the monitor doesn't
@@ -385,21 +393,18 @@ impl ObsJobHandler {
             ..build_info
         };
         debug!("Saving complete build info: {:?}", build_info);
-
-        let build_info_file = tokio::task::spawn_blocking(move || build_info.save()).await??;
-        self.artifacts
-            .insert(args.build_info_out, AsyncFile::from_std(build_info_file));
+        build_info.save(self, &args.build_info_out).await?;
 
         Ok(())
     }
 
     #[instrument(skip(self))]
     async fn run_generate_monitor(&mut self, args: GenerateMonitorAction) -> Result<()> {
-        let build_info_data = self.get_data(&args.build_info).await?;
-        let build_info: ObsBuildInfo = serde_yaml::from_slice(&build_info_data[..])
+        let build_info_data = self.read_string(&args.build_info).await?;
+        let build_info: ObsBuildInfo = serde_yaml::from_str(&build_info_data)
             .wrap_err("Failed to parse provided build info file")?;
 
-        let file = generate_monitor_pipeline(
+        let pipeline = generate_monitor_pipeline(
             &build_info.project,
             &build_info.package,
             &build_info
@@ -427,9 +432,8 @@ impl ObsJobHandler {
                 build_log_out: args.build_log_out.to_string(),
             },
         )?;
-        self.artifacts
-            .insert(args.pipeline_out.clone(), AsyncFile::from_std(file));
 
+        self.write(&args.pipeline_out, pipeline.as_bytes()).await?;
         outputln!("Wrote pipeline file '{}'.", args.pipeline_out);
 
         Ok(())
@@ -455,15 +459,9 @@ impl ObsJobHandler {
             .await?;
         debug!("Completed with: {:?}", completion);
 
-        let mut log_file = monitor.download_build_log().await?;
-        self.artifacts.insert(
-            args.build_log_out.clone(),
-            log_file
-                .file
-                .try_clone()
-                .await
-                .wrap_err("Failed to clone log file")?,
-        );
+        let mut log_file = monitor
+            .download_build_log(&args.build_log_out, self)
+            .await?;
 
         match completion {
             PackageCompletion::Succeeded => {
@@ -515,17 +513,12 @@ impl ObsJobHandler {
             &args.package,
             &args.repository,
             &args.arch,
+            self,
+            &args.build_results_dir,
         )
         .await?;
-        let binary_count = binaries.len();
 
-        self.artifacts.extend(
-            binaries
-                .into_iter()
-                .map(|(path, file)| (args.build_results_dir.join(path).to_string(), file)),
-        );
-
-        outputln!("Downloaded {} artifact(s).", binary_count);
+        outputln!("Downloaded {} artifact(s).", binaries.paths.len());
         Ok(())
     }
 
@@ -537,7 +530,11 @@ impl ObsJobHandler {
         }
 
         let build_info_data = if args.ignore_missing_build_info {
-            if let Some(build_info_data) = self.get_data_or_none(&args.build_info).await? {
+            if let Some(build_info_data) = self
+                .read_string(&args.build_info)
+                .await
+                .missing_artifact_to_none()?
+            {
                 build_info_data
             } else {
                 outputln!(
@@ -547,10 +544,10 @@ impl ObsJobHandler {
                 return Ok(());
             }
         } else {
-            self.get_data(&args.build_info).await?
+            self.read_string(&args.build_info).await?
         };
 
-        let build_info: ObsBuildInfo = serde_yaml::from_slice(&build_info_data[..])
+        let build_info: ObsBuildInfo = serde_yaml::from_str(&build_info_data)
             .wrap_err("Failed to parse provided build info file")?;
 
         if build_info.is_branched {
@@ -607,24 +604,32 @@ impl ObsJobHandler {
     }
 }
 
-#[instrument(skip(file, uploader))]
-async fn upload_artifact(
-    name: String,
-    file: &mut AsyncFile,
-    uploader: &mut Uploader,
-) -> Result<()> {
-    let dest = uploader.file(name).await;
-
-    file.rewind().await.wrap_err("Failed to rewind artifact")?;
-    tokio::io::copy(file, &mut dest.compat_write())
-        .await
-        .wrap_err("Failed to copy artifact contents")?;
-
-    Ok(())
+pub struct UploadableArtifact {
+    path: Utf8PathBuf,
+    file: AsyncFile,
 }
 
 #[async_trait]
-impl JobHandler for ObsJobHandler {
+impl UploadableFile for UploadableArtifact {
+    type Data<'a> = Compat<AsyncFile>;
+
+    fn get_path(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self.path.as_str())
+    }
+
+    async fn get_data(&self) -> Result<Self::Data<'_>, ()> {
+        self.file
+            .try_clone()
+            .await
+            .map(TokioAsyncReadCompatExt::compat)
+            .map_err(|e| {
+                warn!("Failed to clone {}: {e}", self.path);
+            })
+    }
+}
+
+#[async_trait]
+impl JobHandler<UploadableArtifact> for ObsJobHandler {
     async fn step(&mut self, script: &[String], _phase: Phase) -> JobResult {
         for command in script {
             if let Err(err) = self.command(command).await {
@@ -642,36 +647,45 @@ impl JobHandler for ObsJobHandler {
         Ok(())
     }
 
-    async fn upload_artifacts(&mut self, uploader: &mut Uploader) -> JobResult {
-        let mut success = true;
-
-        for (name, file) in &mut self.artifacts {
-            if let Err(err) = upload_artifact(name.clone(), file, uploader).await {
-                error!(gitlab.output = true, "Failed to upload {}: {:?}", name, err);
-                success = false;
+    async fn get_uploadable_files(
+        &mut self,
+    ) -> Result<Box<dyn Iterator<Item = UploadableArtifact> + Send>, ()> {
+        let mut files = vec![];
+        for (path, file) in &mut self.artifacts {
+            match file.try_clone().await {
+                Ok(file) => files.push(UploadableArtifact {
+                    path: path.clone(),
+                    file,
+                }),
+                Err(err) => error!(
+                    gitlab.output = true,
+                    "Failed to prepare to upload {path}: {err:?}"
+                ),
             }
         }
 
-        if success {
-            Ok(())
-        } else {
-            Err(())
-        }
+        Ok(Box::new(files.into_iter()))
     }
 }
 
 #[instrument(skip(dep), fields(dep_id = dep.id(), dep_name = dep.name()))]
-async fn check_for_artifact(dep: Dependency<'_>, filename: &str) -> Result<Option<AsyncFile>> {
-    // Needed because anything captured by spawn_blocking must have a 'static
-    // lifetime.
-    let filename = filename.to_owned();
+async fn check_for_artifact(dep: Dependency<'_>, path: &Utf8Path) -> Result<Option<AsyncFile>> {
+    // This needs to be an owned type, because captured by spawn_blocking must
+    // have a 'static lifetime, so we also take the opportunity to normalize the
+    // path from extra trailing slashes and similar.
+    let path = path.components().collect::<Utf8PathBuf>();
 
     // TODO: not spawn a sync environment for *every single artifact*
     if let Some(mut artifact) = dep.download().await? {
         if let Some(file) = tokio::task::spawn_blocking(move || {
             artifact
-                .file(&filename)
-                .map(|mut file| save_to_tempfile(&mut file))
+                .file(path.as_str())
+                .map(|mut file| {
+                    let mut temp = tempfile::tempfile()?;
+                    std::io::copy(&mut file, &mut temp)?;
+                    temp.rewind()?;
+                    Ok::<_, Report>(temp)
+                })
                 .transpose()
         })
         .await??
@@ -685,34 +699,45 @@ async fn check_for_artifact(dep: Dependency<'_>, filename: &str) -> Result<Optio
 
 #[async_trait]
 impl ArtifactDirectory for ObsJobHandler {
-    type Reader = File;
+    #[instrument(skip(self, path), path = path.as_ref())]
+    async fn open(&self, path: impl AsRef<Utf8Path> + Send) -> Result<AsyncFile> {
+        let path = path.as_ref();
 
-    #[instrument(skip(self))]
-    async fn get_file_or_none(&self, filename: &str) -> Result<Option<AsyncFile>> {
-        if let Some(file) = self.artifacts.get(filename) {
-            let mut file = file
-                .try_clone()
-                .await
-                .wrap_err("Failed to clone artifact")?;
-            file.rewind().await.wrap_err("Failed to rewind artifact")?;
-            return Ok(Some(file));
+        if let Some(file) = self.artifacts.get(path) {
+            let file = file.reopen().await.wrap_err("Failed to reopen artifact")?;
+            return Ok(file);
         }
 
         for dep in self.job.dependencies() {
-            if let Some(file) = check_for_artifact(dep, filename).await? {
-                return Ok(Some(file));
+            if let Some(file) = check_for_artifact(dep, path).await? {
+                return Ok(file);
             }
         }
 
-        Ok(None)
+        Err(MissingArtifact(path.to_owned()).into())
     }
 
-    #[instrument(skip(self))]
-    async fn get_or_none(&self, filename: &str) -> Result<Option<Self::Reader>> {
-        Ok(self
-            .get_file_or_none(filename)
-            .await?
-            .map(|f| f.try_into_std().unwrap()))
+    #[tracing::instrument(skip(self, path, func), path = path.as_ref())]
+    async fn save_with<
+        Ret: Send,
+        Err,
+        Fut: Future<Output = Result<Ret, Err>> + Send,
+        F: (FnOnce(AsyncFile) -> Fut) + Send,
+    >(
+        &mut self,
+        path: impl AsRef<Utf8Path> + Send,
+        func: F,
+    ) -> Result<Ret>
+    where
+        Report: From<Err>,
+    {
+        let mut file = async_tempfile().await?;
+        let ret = func(file.try_clone().await?).await?;
+
+        file.flush().await?;
+        self.artifacts
+            .insert(path.as_ref().to_owned(), file.reopen().await?);
+        Ok(ret)
     }
 }
 
@@ -721,20 +746,19 @@ mod tests {
     use std::{
         cmp::Ordering,
         io::{Cursor, Read},
-        sync::Once,
+        sync::{Arc, Once},
         time::{Duration, SystemTime},
     };
 
     use camino::Utf8Path;
-    use claim::*;
-    use futures_util::{AsyncWriteExt, Future};
-    use gitlab_runner::{GitlabLayer, Runner};
+    use claims::*;
+    use gitlab_runner::{GitlabLayer, Runner, RunnerBuilder};
     use gitlab_runner_mock::*;
     use open_build_service_mock::*;
-    use rstest::{fixture, rstest};
+    use rstest::rstest;
     use tempfile::TempDir;
-    use tracing::{instrument::WithSubscriber, Level};
-    use tracing_subscriber::{filter::Targets, prelude::*, Layer, Registry};
+    use tracing::{Level, instrument::WithSubscriber};
+    use tracing_subscriber::{Layer, Registry, filter::Targets, prelude::*};
     use zip::ZipArchive;
 
     use crate::{test_support::*, upload::compute_md5};
@@ -768,38 +792,33 @@ mod tests {
         obs_client: obs::Client,
     }
 
-    #[fixture]
-    async fn test_context() -> (TestContext, GitlabLayer) {
+    async fn with_context<T>(func: impl AsyncFnOnce(TestContext) -> T) -> T {
         COLOR_EYRE_INSTALL.call_once(|| color_eyre::install().unwrap());
 
         let runner_dir = tempfile::tempdir().unwrap();
         let gitlab_mock = GitlabRunnerMock::start().await;
-        let (runner, layer) = Runner::new_with_layer(
+        let (layer, jobs) = GitlabLayer::new();
+        let runner = RunnerBuilder::new(
             gitlab_mock.uri(),
             gitlab_mock.runner_token().to_owned(),
             runner_dir.path().to_owned(),
-        );
+            jobs,
+        )
+        .build()
+        .await;
 
         let obs_mock = create_default_mock().await;
         let obs_client = create_default_client(&obs_mock);
 
-        (
-            TestContext {
-                _runner_dir: runner_dir,
-                gitlab_mock,
-                runner,
-                obs_mock,
-                obs_client,
-            },
-            layer,
-        )
-    }
+        let ctx = TestContext {
+            _runner_dir: runner_dir,
+            gitlab_mock,
+            runner,
+            obs_mock,
+            obs_client,
+        };
 
-    async fn with_tracing<T, Fut>(layer: GitlabLayer, future: Fut) -> T
-    where
-        Fut: Future<Output = T>,
-    {
-        future
+        func(ctx)
             .with_subscriber(
                 Registry::default()
                     .with(
@@ -876,9 +895,10 @@ mod tests {
         job
     }
 
-    async fn run_handler<H, Func>(context: &mut TestContext, handler_func: Func)
+    async fn run_handler<H, U, Func>(context: &mut TestContext, handler_func: Func)
     where
-        H: JobHandler + Send + 'static,
+        U: UploadableFile + Send + 'static,
+        H: JobHandler<U> + Send + 'static,
         Func: (FnOnce(Job) -> H) + Send + Sync + 'static,
     {
         let got_job = context
@@ -891,22 +911,46 @@ mod tests {
     }
 
     struct PutArtifactsHandler {
-        artifacts: HashMap<String, Vec<u8>>,
+        artifacts: Arc<HashMap<String, Vec<u8>>>,
+    }
+
+    struct PutArtifactsFile {
+        artifacts: Arc<HashMap<String, Vec<u8>>>,
+        path: String,
     }
 
     #[async_trait]
-    impl JobHandler for PutArtifactsHandler {
+    impl UploadableFile for PutArtifactsFile {
+        type Data<'a> = Compat<Cursor<&'a Vec<u8>>>;
+
+        fn get_path(&self) -> Cow<'_, str> {
+            Cow::Borrowed(&self.path)
+        }
+
+        async fn get_data(&self) -> Result<Self::Data<'_>, ()> {
+            Ok(Cursor::new(self.artifacts.get(&self.path).unwrap()).compat())
+        }
+    }
+
+    #[async_trait]
+    impl JobHandler<PutArtifactsFile> for PutArtifactsHandler {
         async fn step(&mut self, _script: &[String], _phase: Phase) -> JobResult {
             Ok(())
         }
 
-        async fn upload_artifacts(&mut self, uploader: &mut Uploader) -> JobResult {
-            for (name, content) in &self.artifacts {
-                let mut file = uploader.file(name.clone()).await;
-                file.write_all(content).await.unwrap();
-            }
-
-            Ok(())
+        async fn get_uploadable_files(
+            &mut self,
+        ) -> Result<Box<dyn Iterator<Item = PutArtifactsFile> + Send>, ()> {
+            Ok(Box::new(
+                self.artifacts
+                    .keys()
+                    .map(|k| PutArtifactsFile {
+                        artifacts: self.artifacts.clone(),
+                        path: k.to_owned(),
+                    })
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+            ))
         }
     }
 
@@ -922,15 +966,20 @@ mod tests {
                 ..Default::default()
             },
         );
-        run_handler(context, |_| PutArtifactsHandler { artifacts }).await;
+        run_handler(context, |_| PutArtifactsHandler {
+            artifacts: Arc::new(artifacts),
+        })
+        .await;
         artifacts_job
     }
 
     fn get_job_artifacts(job: &MockJob) -> HashMap<String, Vec<u8>> {
-        let data = (*job.artifact()).clone();
-        if data.is_empty() {
-            return HashMap::new();
-        }
+        let Some(artifact) = job.uploaded_artifacts().next() else {
+            return Default::default();
+        };
+
+        let data = (*artifact.data).clone();
+        assert!(!data.is_empty());
 
         let cursor = Cursor::new(data);
         let mut zip = ZipArchive::new(cursor).unwrap();
@@ -1032,12 +1081,12 @@ mod tests {
         )
         .await;
 
-        let mut dput_command = format!("dput {} {}", TEST_PROJECT, dsc1_file);
+        let mut dput_command = format!("dput {TEST_PROJECT} {dsc1_file}");
         let mut created_project = TEST_PROJECT.to_owned();
 
         if test == DputTest::Branch {
             created_project += ":branched";
-            dput_command += &format!(" --branch-to {}", created_project);
+            dput_command += &format!(" --branch-to {created_project}");
         }
 
         let dput = enqueue_job(
@@ -1317,11 +1366,12 @@ mod tests {
         );
 
         let mut generate_command = format!(
-            "generate-monitor {} --job-timeout '{}' --rules '[{{a: 1}}, {{b: 2}}]'",
-            TEST_JOB_RUNNER_TAG, TEST_MONITOR_TIMEOUT
+            "generate-monitor {TEST_JOB_RUNNER_TAG} \
+                --job-timeout '{TEST_MONITOR_TIMEOUT}' \
+                --rules '[{{a: 1}}, {{b: 2}}]'"
         );
         if download_binaries {
-            generate_command += &format!(" --download-build-results-to {}", TEST_BUILD_RESULTS_DIR);
+            generate_command += &format!(" --download-build-results-to {TEST_BUILD_RESULTS_DIR}");
         }
         let generate = enqueue_job(
             context,
@@ -1396,27 +1446,19 @@ mod tests {
             let monitor_map = pipeline_yaml
                 .as_mapping()
                 .unwrap()
-                .get(&monitor_job_name.as_str().into())
+                .get(monitor_job_name.as_str())
                 .unwrap()
                 .as_mapping()
                 .unwrap();
 
-            let artifacts = monitor_map
-                .get(&"artifacts".into())
-                .unwrap()
-                .as_mapping()
-                .unwrap();
+            let artifacts = monitor_map.get("artifacts").unwrap().as_mapping().unwrap();
             assert_eq!(
-                artifacts
-                    .get(&"expire_in".into())
-                    .unwrap()
-                    .as_str()
-                    .unwrap(),
+                artifacts.get("expire_in").unwrap().as_str().unwrap(),
                 DEFAULT_ARTIFACT_EXPIRATION
             );
 
             let mut artifact_paths: Vec<_> = artifacts
-                .get(&"paths".into())
+                .get("paths")
                 .unwrap()
                 .as_sequence()
                 .unwrap()
@@ -1434,23 +1476,15 @@ mod tests {
                 assert_eq!(&artifact_paths, &[DEFAULT_BUILD_LOG]);
             }
 
-            let tags = monitor_map
-                .get(&"tags".into())
-                .unwrap()
-                .as_sequence()
-                .unwrap();
+            let tags = monitor_map.get("tags").unwrap().as_sequence().unwrap();
             assert_eq!(tags.len(), 1);
             assert_eq!(tags[0].as_str().unwrap(), TEST_JOB_RUNNER_TAG);
 
-            let timeout = monitor_map
-                .get(&"timeout".into())
-                .unwrap()
-                .as_str()
-                .unwrap();
+            let timeout = monitor_map.get("timeout").unwrap().as_str().unwrap();
             assert_eq!(timeout, TEST_MONITOR_TIMEOUT);
 
             let rules: Vec<_> = monitor_map
-                .get(&"rules".into())
+                .get("rules")
                 .unwrap()
                 .as_sequence()
                 .unwrap()
@@ -1459,20 +1493,16 @@ mod tests {
                 .collect();
             assert_eq!(rules.len(), 2);
 
-            assert_eq!(rules[0].get(&"a".into()).unwrap().as_i64().unwrap(), 1);
-            assert_eq!(rules[1].get(&"b".into()).unwrap().as_i64().unwrap(), 2);
+            assert_eq!(rules[0].get("a").unwrap().as_i64().unwrap(), 1);
+            assert_eq!(rules[1].get("b").unwrap().as_i64().unwrap(), 2);
 
             for script_key in ["before_script", "after_script"] {
-                let script = monitor_map
-                    .get(&script_key.into())
-                    .unwrap()
-                    .as_sequence()
-                    .unwrap();
+                let script = monitor_map.get(script_key).unwrap().as_sequence().unwrap();
                 assert_eq!(script.len(), 0);
             }
 
             let script = monitor_map
-                .get(&"script".into())
+                .get("script")
                 .unwrap()
                 .as_sequence()
                 .unwrap()
@@ -1693,7 +1723,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     async fn test_handler_flow(
-        #[future] test_context: (TestContext, GitlabLayer),
         #[values(
             DputTest::Basic,
             DputTest::Rebuild,
@@ -1711,8 +1740,7 @@ mod tests {
         #[values(true, false)] download_binaries: bool,
         #[values(true, false)] prune_only_if_job_unsuccessful: bool,
     ) {
-        let (mut context, layer) = test_context.await;
-        with_tracing(layer, async {
+        with_context(async |mut context| {
             let (dput, build_info) = test_dput(&mut context, dput_test).await;
 
             test_monitoring(
@@ -1739,9 +1767,8 @@ mod tests {
 
     #[rstest]
     #[tokio::test]
-    async fn test_variable_expansion(#[future] test_context: (TestContext, GitlabLayer)) {
-        let (mut context, layer) = test_context.await;
-        with_tracing(layer, async {
+    async fn test_variable_expansion() {
+        with_context(async |mut context| {
             let job = enqueue_job(
                 &context,
                 JobSpec {
@@ -1771,9 +1798,8 @@ mod tests {
 
     #[rstest]
     #[tokio::test]
-    async fn test_flag_parsing(#[future] test_context: (TestContext, GitlabLayer)) {
-        let (mut context, layer) = test_context.await;
-        with_tracing(layer, async {
+    async fn test_flag_parsing() {
+        with_context(async |mut context| {
             let job = enqueue_job(
                 &context,
                 JobSpec {
@@ -1843,7 +1869,6 @@ mod tests {
     #[rstest]
     #[tokio::test]
     async fn test_generate_monitor_timeouts(
-        #[future] test_context: (TestContext, GitlabLayer),
         #[values(
             None,
             Some(GenerateMonitorTimeoutLocation::HandlerOption),
@@ -1853,8 +1878,7 @@ mod tests {
     ) {
         const TEST_MONITOR_TIMEOUT: &str = "10 minutes";
 
-        let (mut context, layer) = test_context.await;
-        with_tracing(layer, async {
+        with_context(async |mut context| {
             let build_info = ObsBuildInfo {
                 project: TEST_PROJECT.to_owned(),
                 package: TEST_PACKAGE_1.to_owned(),
@@ -1877,7 +1901,7 @@ mod tests {
                 &mut context,
                 [(
                     DEFAULT_BUILD_INFO.to_owned(),
-                    serde_yaml::to_vec(&build_info).unwrap(),
+                    serde_yaml::to_string(&build_info).unwrap().into_bytes(),
                 )]
                 .into(),
             )
@@ -1929,7 +1953,7 @@ mod tests {
                 .as_mapping()
                 .unwrap();
 
-            let timeout_yaml = monitor_map.get(&"timeout".into());
+            let timeout_yaml = monitor_map.get("timeout");
             if test.is_some() {
                 assert_eq!(
                     timeout_yaml.unwrap().as_str().unwrap(),

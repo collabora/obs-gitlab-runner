@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use color_eyre::eyre::{ensure, eyre, Context, Report, Result};
+use color_eyre::eyre::{Context, Report, Result, ensure, eyre};
 use derivative::*;
 use futures_util::stream::StreamExt;
 use gitlab_runner::outputln;
@@ -11,7 +11,7 @@ use tokio::{
 };
 use tracing::{debug, instrument};
 
-use crate::retry::retry_request;
+use crate::{artifacts::ArtifactDirectory, retry_request};
 
 #[derive(Debug)]
 pub enum PackageCompletion {
@@ -78,14 +78,13 @@ impl ObsMonitor {
 
     #[instrument(skip(self))]
     async fn get_latest_revision(&self) -> Result<String> {
-        let dir = retry_request(|| async {
+        let dir = retry_request!(
             self.client
                 .project(self.package.project.clone())
                 .package(self.package.package.clone())
                 .list(None)
                 .await
-        })
-        .await?;
+        )?;
         dir.rev.ok_or_else(|| eyre!("Latest revision is 0"))
     }
 
@@ -102,7 +101,7 @@ impl ObsMonitor {
             .project(self.package.project.clone())
             .package(self.package.package.clone());
 
-        let all_results = retry_request(|| async { client_package.result().await }).await?;
+        let all_results = retry_request!(client_package.result().await)?;
 
         // TODO: filter this in the API call instead of afterwards
         let result = all_results
@@ -131,7 +130,7 @@ impl ObsMonitor {
             // sure there is a build *newer* that the last endtime we have
             // recorded.
 
-            let jobhist = retry_request(|| async {
+            let jobhist = retry_request!(
                 client_project
                     .jobhistory(
                         &self.package.repository,
@@ -139,9 +138,8 @@ impl ObsMonitor {
                         &obs::JobHistoryFilters::only_package(self.package.package.clone()),
                     )
                     .await
-            })
-            .await
-            .wrap_err("Failed to get jobhistory")?;
+                    .wrap_err("Failed to get jobhistory")
+            )?;
             debug!(?jobhist.jobhist);
             let prev_endtime_for_commit = jobhist
                 .jobhist
@@ -242,31 +240,39 @@ impl ObsMonitor {
         }
     }
 
-    #[instrument]
-    pub async fn download_build_log(&self) -> Result<LogFile> {
+    #[instrument(skip(artifacts))]
+    pub async fn download_build_log(
+        &self,
+        filename: &str,
+        artifacts: &mut impl ArtifactDirectory,
+    ) -> Result<LogFile> {
         const LOG_LEN_TO_CHECK_FOR_MD5: u64 = 2500;
 
-        let mut file = retry_request(|| async {
-            let mut file = AsyncFile::from_std(
-                tempfile::tempfile().wrap_err("Failed to create tempfile to build log")?,
-            );
-            let mut stream = self
-                .client
-                .project(self.package.project.clone())
-                .package(self.package.package.clone())
-                .log(&self.package.repository, &self.package.arch)
-                .stream(obs::PackageLogStreamOptions::default())?;
+        let mut file = artifacts
+            .save_with(filename, async |mut file| {
+                retry_request!({
+                    file.rewind().await.wrap_err("Failed to rewind build log")?;
 
-            while let Some(bytes) = stream.next().await {
-                let bytes = bytes?;
-                file.write_all(&bytes)
-                    .await
-                    .wrap_err("Failed to download build log")?;
-            }
+                    let mut stream = self
+                        .client
+                        .project(self.package.project.clone())
+                        .package(self.package.package.clone())
+                        .log(&self.package.repository, &self.package.arch)
+                        .stream(obs::PackageLogStreamOptions::default())?;
 
-            Ok::<AsyncFile, Report>(file)
-        })
-        .await?;
+                    while let Some(bytes) = stream.next().await {
+                        let bytes = bytes?;
+                        file.write_all(&bytes)
+                            .await
+                            .wrap_err("Failed to download build log")?;
+                    }
+
+                    file.flush().await.wrap_err("Failed to flush build log")
+                })?;
+
+                Ok::<_, Report>(file)
+            })
+            .await?;
 
         let len = file
             .stream_position()
@@ -289,11 +295,11 @@ impl ObsMonitor {
 mod tests {
     use std::{collections::HashMap, time::SystemTime};
 
-    use claim::*;
+    use claims::*;
     use obs::PackageCode;
     use open_build_service_mock::*;
 
-    use crate::test_support::*;
+    use crate::{artifacts::test_support::MockArtifactDirectory, test_support::*};
 
     use super::*;
 
@@ -336,9 +342,9 @@ mod tests {
             },
         );
 
-        assert_ok!(monitor.check_log_md5(&format!("srcmd5 '{}'", srcmd5)));
+        assert_ok!(monitor.check_log_md5(&format!("srcmd5 '{srcmd5}'")));
         assert_err!(monitor.check_log_md5("srcmd5 'xyz123'"));
-        assert_err!(monitor.check_log_md5(&format!("'{}'", srcmd5)));
+        assert_err!(monitor.check_log_md5(&format!("'{srcmd5}'")));
 
         mock.branch(
             TEST_PROJECT.to_owned(),
@@ -365,19 +371,20 @@ mod tests {
             },
         );
 
-        assert_ok!(monitor.check_log_md5(&format!("srcmd5 '{}'", branch_xsrcmd5)));
-        assert_err!(monitor.check_log_md5(&format!("srcmd5 '{}'", srcmd5)));
-        assert_err!(monitor.check_log_md5(&format!("srcmd5 '{}'", branch_srcmd5)));
+        assert_ok!(monitor.check_log_md5(&format!("srcmd5 '{branch_xsrcmd5}'")));
+        assert_err!(monitor.check_log_md5(&format!("srcmd5 '{srcmd5}'")));
+        assert_err!(monitor.check_log_md5(&format!("srcmd5 '{branch_srcmd5}'")));
     }
 
     #[tokio::test]
     async fn test_download_log() {
+        const LOG_FILENAME: &str = "build.log";
+
         let srcmd5 = random_md5();
         let log_content = format!(
-            "srcmd5 '{}'\n
+            "srcmd5 '{srcmd5}'\n
                 some random logs are here
-                testing 123 456",
-            srcmd5
+                testing 123 456"
         );
 
         let mock = create_default_mock().await;
@@ -416,6 +423,8 @@ mod tests {
         );
 
         let client = create_default_client(&mock);
+        let mut artifacts = MockArtifactDirectory::default();
+
         let monitor = ObsMonitor::new(
             client,
             MonitoredPackage {
@@ -429,11 +438,18 @@ mod tests {
             },
         );
 
-        let mut log_file = assert_ok!(monitor.download_build_log().await);
+        let mut log_file = assert_ok!(
+            monitor
+                .download_build_log(LOG_FILENAME, &mut artifacts)
+                .await
+        );
         assert_eq!(log_file.len, log_content.len() as u64);
 
         let mut log = "".to_owned();
         assert_ok!(log_file.file.read_to_string(&mut log).await);
+        assert_eq!(log, log_content);
+
+        let log = assert_ok!(artifacts.read_string(LOG_FILENAME).await);
         assert_eq!(log, log_content);
 
         let new_srcmd5 = random_md5();
@@ -448,7 +464,11 @@ mod tests {
             true,
         );
 
-        let err = assert_err!(monitor.download_build_log().await);
+        let err = assert_err!(
+            monitor
+                .download_build_log(LOG_FILENAME, &mut artifacts)
+                .await
+        );
         assert!(err.to_string().contains("unavailable"));
     }
 
@@ -851,6 +871,6 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(5), monitor.monitor_package(options)).await
         );
         let err = assert_err!(result);
-        assert!(err.to_string().contains("Old build status"), "{:?}", err);
+        assert!(err.to_string().contains("Old build status"), "{err:?}");
     }
 }

@@ -1,6 +1,6 @@
 use serde::{
-    de::{IntoDeserializer, Visitor},
     Deserialize, Deserializer,
+    de::{IntoDeserializer, Visitor},
 };
 use std::marker::PhantomData;
 
@@ -100,7 +100,7 @@ pub struct Dsc {
 
 #[cfg(test)]
 mod tests {
-    use claim::*;
+    use claims::*;
 
     use super::*;
 

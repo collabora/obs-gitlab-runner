@@ -4,9 +4,9 @@ use color_eyre::eyre::{Result, WrapErr};
 use gitlab_runner::outputln;
 use open_build_service_api as obs;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info_span, instrument, Instrument};
+use tracing::{Instrument, debug, info_span, instrument};
 
-use crate::retry::retry_request;
+use crate::retry_request;
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RepoArch {
@@ -66,19 +66,13 @@ async fn get_status(
     repo: &str,
     arch: &str,
 ) -> Result<obs::BuildStatus> {
-    let status = retry_request(|| async {
+    let status = retry_request!({
         client
             .project(project.to_owned())
             .package(package.to_owned())
             .status(repo, arch)
             .await
-    })
-    .await
-    .wrap_err_with(|| {
-        format!(
-            "Failed to get status of {}/{}/{}/{}",
-            project, repo, arch, package
-        )
+            .wrap_err_with(|| format!("Failed to get status of {project}/{repo}/{arch}/{package}"))
     })?;
     debug!(?status);
 
@@ -149,10 +143,13 @@ impl BuildMeta {
         package: String,
         options: &BuildMetaOptions,
     ) -> Result<BuildMeta> {
-        let project_meta =
-            retry_request(|| async { client.project(project.to_owned()).meta().await })
+        let project_meta = retry_request!(
+            client
+                .project(project.to_owned())
+                .meta()
                 .await
-                .wrap_err("Failed to get project meta")?;
+                .wrap_err("Failed to get project meta")
+        )?;
 
         debug!(?project_meta);
 
@@ -180,22 +177,17 @@ impl BuildMeta {
                 }
 
                 let jobhist = match options.history_retrieval {
-                    BuildHistoryRetrieval::Full => {
-                        retry_request(|| async {
-                            client
-                                .project(project.to_owned())
-                                .jobhistory(
-                                    &repo_meta.name,
-                                    &arch,
-                                    &obs::JobHistoryFilters::only_package(package.to_owned()),
-                                )
-                                .instrument(
-                                    info_span!("get:jobhist", repo = %repo_meta.name, %arch),
-                                )
-                                .await
-                        })
-                        .await?
-                    }
+                    BuildHistoryRetrieval::Full => retry_request!(
+                        client
+                            .project(project.to_owned())
+                            .jobhistory(
+                                &repo_meta.name,
+                                &arch,
+                                &obs::JobHistoryFilters::only_package(package.to_owned()),
+                            )
+                            .instrument(info_span!("get:jobhist", repo = %repo_meta.name, %arch),)
+                            .await
+                    )?,
                     BuildHistoryRetrieval::None => obs::JobHistList { jobhist: vec![] },
                 };
 
@@ -254,7 +246,7 @@ impl BuildMeta {
                 .jobhist
                 .iter()
                 .filter(|e| e.srcmd5 == srcmd5)
-                .last()
+                .next_back()
                 .map(|e| e.endtime);
 
             repos.insert(
@@ -273,7 +265,7 @@ impl BuildMeta {
 mod tests {
     use std::time::{Duration, SystemTime};
 
-    use claim::*;
+    use claims::*;
     use open_build_service_mock::*;
     use rstest::rstest;
 

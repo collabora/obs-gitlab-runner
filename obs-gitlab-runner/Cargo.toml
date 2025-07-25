@@ -36,6 +36,7 @@ url = "2.5"
 claims.workspace = true
 gitlab-runner-mock = "0.2.1"
 # gitlab-runner-mock = { path = "../gitlab-runner-rs/gitlab-runner-mock" }
+obo-tests = { path = "../obo-tests" }
 open-build-service-mock.workspace = true
 rstest.workspace = true
 wiremock.workspace = true

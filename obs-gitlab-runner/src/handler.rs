@@ -439,19 +439,18 @@ async fn check_for_artifact(
 #[cfg(test)]
 mod tests {
     use std::{
-        cmp::Ordering,
         io::{Cursor, Read},
+        marker::PhantomData,
         sync::{Arc, Once},
-        time::{Duration, SystemTime},
+        time::Duration,
     };
 
-    use camino::Utf8Path;
     use claims::*;
     use gitlab_runner::{GitlabLayer, Runner, RunnerBuilder};
     use gitlab_runner_mock::*;
-    use obo_core::{build_meta::RepoArch, upload::compute_md5};
+    use obo_core::build_meta::{CommitBuildInfo, RepoArch};
     use obo_test_support::*;
-    use open_build_service_mock::*;
+    use obo_tests::*;
     use rstest::rstest;
     use tempfile::TempDir;
     use tracing::{Level, instrument::WithSubscriber};
@@ -461,151 +460,6 @@ mod tests {
     use crate::logging::GitLabForwarder;
 
     use super::*;
-
-    const JOB_TIMEOUT: u64 = 3600;
-    const TEST_LOG_TAIL: u64 = 50;
-    const OLD_STATUS_SLEEP_DURATION: Duration = Duration::from_millis(100);
-
-    const DEFAULT_HANDLER_OPTIONS: HandlerOptions = HandlerOptions {
-        default_monitor_job_timeout: None,
-        log_tail: TEST_LOG_TAIL,
-        monitor: PackageMonitoringOptions {
-            sleep_on_building: Duration::ZERO,
-            sleep_on_old_status: OLD_STATUS_SLEEP_DURATION,
-            // High limit, since we don't really test that
-            // functionality in the handler tests.
-            max_old_status_retries: 99,
-        },
-    };
-
-    static COLOR_EYRE_INSTALL: Once = Once::new();
-
-    struct TestContext {
-        _runner_dir: TempDir,
-        gitlab_mock: GitlabRunnerMock,
-        runner: Runner,
-
-        obs_mock: ObsMock,
-        obs_client: obs::Client,
-    }
-
-    async fn with_context<T>(func: impl AsyncFnOnce(TestContext) -> T) -> T {
-        COLOR_EYRE_INSTALL.call_once(|| color_eyre::install().unwrap());
-
-        let runner_dir = tempfile::tempdir().unwrap();
-        let gitlab_mock = GitlabRunnerMock::start().await;
-        let (layer, jobs) = GitlabLayer::new();
-        let runner = RunnerBuilder::new(
-            gitlab_mock.uri(),
-            gitlab_mock.runner_token().to_owned(),
-            runner_dir.path().to_owned(),
-            jobs,
-        )
-        .build()
-        .await;
-
-        let obs_mock = create_default_mock().await;
-        let obs_client = create_default_client(&obs_mock);
-
-        let ctx = TestContext {
-            _runner_dir: runner_dir,
-            gitlab_mock,
-            runner,
-            obs_mock,
-            obs_client,
-        };
-
-        func(ctx)
-            .with_subscriber(
-                Registry::default()
-                    .with(
-                        tracing_subscriber::fmt::layer()
-                            .with_test_writer()
-                            .with_filter(
-                                Targets::new().with_target("obs_gitlab_runner", Level::TRACE),
-                            ),
-                    )
-                    .with(tracing_error::ErrorLayer::default())
-                    .with(GitLabForwarder::new(layer)),
-            )
-            .await
-    }
-
-    #[derive(Default)]
-    struct JobSpec {
-        name: String,
-        dependencies: Vec<MockJob>,
-        variables: HashMap<String, String>,
-        script: Vec<String>,
-        after_script: Vec<String>,
-    }
-
-    fn enqueue_job(context: &TestContext, spec: JobSpec) -> MockJob {
-        let mut builder = context.gitlab_mock.job_builder(spec.name);
-
-        builder.add_step(
-            MockJobStepName::Script,
-            spec.script,
-            JOB_TIMEOUT,
-            MockJobStepWhen::OnSuccess,
-            false,
-        );
-
-        if !spec.after_script.is_empty() {
-            builder.add_step(
-                MockJobStepName::AfterScript,
-                spec.after_script,
-                JOB_TIMEOUT,
-                MockJobStepWhen::OnSuccess,
-                false,
-            );
-        }
-
-        builder.add_artifact(
-            None,
-            false,
-            vec!["*".to_owned()],
-            Some(MockJobArtifactWhen::Always),
-            "archive".to_owned(),
-            Some("zip".to_owned()),
-            None,
-        );
-
-        for dependency in spec.dependencies {
-            builder.dependency(dependency);
-        }
-        for (key, value) in spec.variables {
-            builder.add_variable(key, value, true, false);
-        }
-
-        builder.add_variable(
-            "OBS_SERVER".to_owned(),
-            context.obs_client.url().to_string(),
-            false,
-            true,
-        );
-        builder.add_variable("OBS_USER".to_owned(), TEST_USER.to_owned(), false, true);
-        builder.add_variable("OBS_PASSWORD".to_owned(), TEST_PASS.to_owned(), false, true);
-
-        let job = builder.build();
-        context.gitlab_mock.enqueue_job(job.clone());
-        job
-    }
-
-    async fn run_handler<H, U, Func>(context: &mut TestContext, handler_func: Func)
-    where
-        U: UploadableFile + Send + 'static,
-        H: JobHandler<U> + Send + 'static,
-        Func: (FnOnce(Job) -> H) + Send + Sync + 'static,
-    {
-        let got_job = context
-            .runner
-            .request_job(move |job| futures_util::future::ready(Ok(handler_func(job))))
-            .await
-            .unwrap();
-        assert!(got_job);
-        context.runner.wait_for_space(1).await;
-    }
 
     struct PutArtifactsHandler {
         artifacts: Arc<HashMap<String, Vec<u8>>>,
@@ -651,369 +505,334 @@ mod tests {
         }
     }
 
-    async fn put_artifacts(
-        context: &mut TestContext,
-        artifacts: HashMap<String, Vec<u8>>,
-    ) -> MockJob {
-        let artifacts_job = enqueue_job(
-            context,
-            JobSpec {
-                name: "artifacts".to_owned(),
-                script: vec!["dummy".to_owned()],
-                ..Default::default()
-            },
-        );
-        run_handler(context, |_| PutArtifactsHandler {
-            artifacts: Arc::new(artifacts),
-        })
-        .await;
-        artifacts_job
+    #[derive(Clone, Debug)]
+    struct GitLabArtifactsHandle(MockJob);
+
+    impl ArtifactsHandle for GitLabArtifactsHandle {}
+
+    #[derive(Clone, Debug)]
+    struct GitLabExecutionResult(MockJob);
+
+    impl ExecutionResult for GitLabExecutionResult {
+        type Artifacts = GitLabArtifactsHandle;
+
+        fn ok(&self) -> bool {
+            self.0.state() == MockJobState::Success
+        }
+
+        fn log(&self) -> String {
+            String::from_utf8_lossy(&self.0.log()).into_owned()
+        }
+
+        fn artifacts(&self) -> Self::Artifacts {
+            GitLabArtifactsHandle(self.0.clone())
+        }
     }
 
-    fn get_job_artifacts(job: &MockJob) -> HashMap<String, Vec<u8>> {
-        let Some(artifact) = job.uploaded_artifacts().next() else {
-            return Default::default();
+    // All the GitLabRunHandlerWrapper* boilerplate is basically a trick to be
+    // able to type-erase the generics of Runner::request_job(), so that you can
+    // pass a job handler to the RunBuilder without having to then propagate the
+    // handler's type everywhere. Ideally we could just use a lambda, but that
+    // causes a variety of lifetime issues due to the various constraints around
+    // async function types.
+    #[async_trait]
+    trait GitLabRunHandlerWrapper: Send + Sync {
+        async fn request_job(&mut self, runner: &mut Runner);
+    }
+
+    struct GitLabRunHandlerWrapperImpl<
+        U: UploadableFile + Send + Sync + 'static,
+        H: JobHandler<U> + Send + Sync + 'static,
+        Func: (FnOnce(Job) -> H) + Send + Sync + 'static,
+    > {
+        func: Option<Func>,
+        _phantom: PhantomData<(U, H)>,
+    }
+
+    #[async_trait]
+    impl<
+        U: UploadableFile + Send + Sync + 'static,
+        H: JobHandler<U> + Send + Sync + 'static,
+        Func: (FnOnce(Job) -> H) + Send + Sync + 'static,
+    > GitLabRunHandlerWrapper for GitLabRunHandlerWrapperImpl<U, H, Func>
+    {
+        async fn request_job(&mut self, runner: &mut Runner) {
+            let handler = self
+                .func
+                .take()
+                .expect("request_job can only be called once");
+            let got_job = runner
+                .request_job(move |job| futures_util::future::ready(Ok(handler(job))))
+                .await
+                .unwrap();
+            assert!(got_job);
+        }
+    }
+
+    struct GitLabRunBuilder<'context> {
+        context: &'context mut GitLabTestContext,
+        script: Vec<String>,
+        after_script: Vec<String>,
+        dependencies: Vec<MockJob>,
+        variables: HashMap<String, String>,
+        handler: Box<dyn GitLabRunHandlerWrapper>,
+        timeout: Duration,
+    }
+
+    fn create_obs_job_handler_factory(
+        options: HandlerOptions,
+    ) -> impl FnOnce(Job) -> ObsJobHandler {
+        move |job| assert_ok!(ObsJobHandler::from_obs_config_in_job(job, options))
+    }
+
+    impl GitLabRunBuilder<'_> {
+        fn after_command(self, cmd: impl Into<String>) -> Self {
+            self.after_script(&[cmd.into()])
+        }
+
+        fn after_script(mut self, script: &[String]) -> Self {
+            self.after_script.extend_from_slice(script);
+            self
+        }
+
+        fn variable(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+            self.variables.insert(name.into(), value.into());
+            self
+        }
+
+        fn job_handler_factory<
+            U: UploadableFile + Send + Sync + 'static,
+            H: JobHandler<U> + Send + Sync + 'static,
+            Func: (FnOnce(Job) -> H) + Send + Sync + 'static,
+        >(
+            mut self,
+            handler_func: Func,
+        ) -> Self {
+            self.handler = Box::new(GitLabRunHandlerWrapperImpl {
+                func: Some(handler_func),
+                _phantom: PhantomData,
+            });
+            self
+        }
+
+        fn obs_job_handler(self, options: HandlerOptions) -> Self {
+            self.job_handler_factory(create_obs_job_handler_factory(options))
+        }
+    }
+
+    #[async_trait]
+    impl<'context> RunBuilder<'context> for GitLabRunBuilder<'context> {
+        type ArtifactsHandle = GitLabArtifactsHandle;
+        type ExecutionResult = GitLabExecutionResult;
+
+        fn script(mut self, script: &[String]) -> Self {
+            self.script.extend_from_slice(script);
+            self
+        }
+
+        fn artifacts(mut self, artifacts: Self::ArtifactsHandle) -> Self {
+            self.dependencies.push(artifacts.0);
+            self
+        }
+
+        fn timeout(mut self, timeout: Duration) -> Self {
+            self.timeout = timeout;
+            self
+        }
+
+        async fn go(mut self) -> Self::ExecutionResult {
+            const JOB_TIMEOUT: u64 = 3600;
+
+            let mut builder = self.context.gitlab_mock.job_builder("test".to_owned());
+
+            builder.add_step(
+                MockJobStepName::Script,
+                self.script,
+                JOB_TIMEOUT,
+                MockJobStepWhen::OnSuccess,
+                false,
+            );
+
+            if !self.after_script.is_empty() {
+                builder.add_step(
+                    MockJobStepName::AfterScript,
+                    self.after_script,
+                    JOB_TIMEOUT,
+                    MockJobStepWhen::OnSuccess,
+                    false,
+                );
+            }
+
+            builder.add_artifact(
+                None,
+                false,
+                vec!["*".to_owned()],
+                Some(MockJobArtifactWhen::Always),
+                "archive".to_owned(),
+                Some("zip".to_owned()),
+                None,
+            );
+
+            for dependency in self.dependencies {
+                builder.dependency(dependency);
+            }
+            for (key, value) in self.variables {
+                builder.add_variable(key, value, true, false);
+            }
+
+            builder.add_variable(
+                "OBS_SERVER".to_owned(),
+                self.context.obs.client.url().to_string(),
+                false,
+                true,
+            );
+            builder.add_variable("OBS_USER".to_owned(), TEST_USER.to_owned(), false, true);
+            builder.add_variable("OBS_PASSWORD".to_owned(), TEST_PASS.to_owned(), false, true);
+
+            let job = builder.build();
+            self.context.gitlab_mock.enqueue_job(job.clone());
+
+            self.handler.request_job(&mut self.context.runner).await;
+            self.context.runner.wait_for_space(1).await;
+
+            GitLabExecutionResult(job)
+        }
+    }
+
+    const DEFAULT_HANDLER_OPTIONS: HandlerOptions = HandlerOptions {
+        default_monitor_job_timeout: None,
+        log_tail: MONITOR_TEST_LOG_TAIL,
+        monitor: PackageMonitoringOptions {
+            sleep_on_building: Duration::ZERO,
+            sleep_on_old_status: MONITOR_TEST_OLD_STATUS_SLEEP_DURATION,
+            // High limit, since we don't really test that
+            // functionality in the handler tests.
+            max_old_status_retries: 99,
+        },
+    };
+
+    struct GitLabTestContext {
+        _runner_dir: TempDir,
+        gitlab_mock: GitlabRunnerMock,
+        runner: Runner,
+        obs: ObsContext,
+    }
+
+    #[async_trait]
+    impl TestContext for GitLabTestContext {
+        type ArtifactsHandle = GitLabArtifactsHandle;
+        type ExecutionResult = GitLabExecutionResult;
+        type RunBuilder<'context> = GitLabRunBuilder<'context>;
+
+        fn obs(&self) -> &ObsContext {
+            &self.obs
+        }
+
+        async fn inject_artifacts(
+            &mut self,
+            artifacts: HashMap<String, Vec<u8>>,
+        ) -> Self::ArtifactsHandle {
+            self.run()
+                .job_handler_factory(|_| PutArtifactsHandler {
+                    artifacts: Arc::new(artifacts),
+                })
+                .command("dummy")
+                .go()
+                .await
+                .artifacts()
+        }
+
+        async fn fetch_artifacts(
+            &self,
+            handle: &Self::ArtifactsHandle,
+        ) -> HashMap<String, Vec<u8>> {
+            let Some(artifact) = handle.0.uploaded_artifacts().next() else {
+                return Default::default();
+            };
+
+            let data = (*artifact.data).clone();
+            assert!(!data.is_empty());
+
+            let cursor = Cursor::new(data);
+            let mut zip = ZipArchive::new(cursor).unwrap();
+
+            (0..zip.len())
+                .map(|i| {
+                    let mut file = zip.by_index(i).unwrap();
+
+                    let mut contents = vec![];
+                    file.read_to_end(&mut contents).unwrap();
+
+                    (file.name().to_owned(), contents)
+                })
+                .collect()
+        }
+
+        fn run(&mut self) -> Self::RunBuilder<'_> {
+            GitLabRunBuilder {
+                context: self,
+                script: vec![],
+                after_script: vec![],
+                dependencies: vec![],
+                variables: Default::default(),
+                handler: Box::new(GitLabRunHandlerWrapperImpl {
+                    func: Some(create_obs_job_handler_factory(DEFAULT_HANDLER_OPTIONS)),
+                    _phantom: PhantomData,
+                }),
+                timeout: EXECUTION_DEFAULT_TIMEOUT,
+            }
+        }
+    }
+
+    static COLOR_EYRE_INSTALL: Once = Once::new();
+
+    async fn with_context<T>(func: impl AsyncFnOnce(GitLabTestContext) -> T) -> T {
+        COLOR_EYRE_INSTALL.call_once(|| color_eyre::install().unwrap());
+
+        let runner_dir = tempfile::tempdir().unwrap();
+        let gitlab_mock = GitlabRunnerMock::start().await;
+        let (layer, jobs) = GitlabLayer::new();
+        let runner = RunnerBuilder::new(
+            gitlab_mock.uri(),
+            gitlab_mock.runner_token().to_owned(),
+            runner_dir.path().to_owned(),
+            jobs,
+        )
+        .build()
+        .await;
+
+        let obs_mock = create_default_mock().await;
+        let obs_client = create_default_client(&obs_mock);
+
+        let ctx = GitLabTestContext {
+            _runner_dir: runner_dir,
+            gitlab_mock,
+            runner,
+            obs: ObsContext {
+                client: obs_client,
+                mock: obs_mock,
+            },
         };
 
-        let data = (*artifact.data).clone();
-        assert!(!data.is_empty());
-
-        let cursor = Cursor::new(data);
-        let mut zip = ZipArchive::new(cursor).unwrap();
-
-        (0..zip.len())
-            .map(|i| {
-                let mut file = zip.by_index(i).unwrap();
-
-                let mut contents = vec![];
-                file.read_to_end(&mut contents).unwrap();
-
-                (file.name().to_owned(), contents)
-            })
-            .collect()
+        func(ctx)
+            .with_subscriber(
+                Registry::default()
+                    .with(
+                        tracing_subscriber::fmt::layer()
+                            .with_test_writer()
+                            .with_filter(
+                                Targets::new().with_target("obs_gitlab_runner", Level::TRACE),
+                            ),
+                    )
+                    .with(tracing_error::ErrorLayer::default())
+                    .with(GitLabForwarder::new(layer)),
+            )
+            .await
     }
 
-    async fn run_obs_handler_with_options(context: &mut TestContext, options: HandlerOptions) {
-        run_handler(context, move |job| {
-            assert_ok!(ObsJobHandler::from_obs_config_in_job(job, options))
-        })
-        .await;
-    }
-
-    async fn run_obs_handler(context: &mut TestContext) {
-        run_obs_handler_with_options(context, DEFAULT_HANDLER_OPTIONS).await;
-    }
-
-    #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-    enum DputTest {
-        Basic,
-        Rebuild,
-        ReusePreviousBuild,
-        Branch,
-    }
-
-    async fn test_dput(context: &mut TestContext, test: DputTest) -> (MockJob, ObsBuildInfo) {
-        let test1_file = "test1";
-        let test1_contents = b"123";
-        let test1_md5 = compute_md5(test1_contents);
-
-        let dsc1_file = "test1.dsc";
-        let dsc1_contents = format!(
-            "Source: {}\nFiles:\n {} {} {}",
-            TEST_PACKAGE_1,
-            test1_md5.clone(),
-            test1_contents.len(),
-            test1_file
-        );
-        let dsc1_md5 = compute_md5(dsc1_contents.as_bytes());
-
-        let dsc1_bad_file = "test1-bad.dsc";
-        let dsc1_bad_contents =
-            dsc1_contents.replace(test1_file, &(test1_file.to_owned() + ".missing"));
-
-        context.obs_mock.add_project(TEST_PROJECT.to_owned());
-
-        context.obs_mock.add_or_update_repository(
-            TEST_PROJECT,
-            TEST_REPO.to_owned(),
-            TEST_ARCH_1.to_owned(),
-            MockRepositoryCode::Finished,
-        );
-        context.obs_mock.add_or_update_repository(
-            TEST_PROJECT,
-            TEST_REPO.to_owned(),
-            TEST_ARCH_2.to_owned(),
-            MockRepositoryCode::Finished,
-        );
-
-        if test == DputTest::Rebuild {
-            // We also test excluded repos on rebuilds; this test makes it
-            // easier, because it's not testing creating a new package, so we
-            // can create it ourselves first with the desired metadata.
-            context.obs_mock.add_new_package(
-                TEST_PROJECT,
-                TEST_PACKAGE_1.to_owned(),
-                MockPackageOptions::default(),
-            );
-            context.obs_mock.set_package_build_status(
-                TEST_PROJECT,
-                TEST_REPO,
-                TEST_ARCH_2,
-                TEST_PACKAGE_1.to_owned(),
-                MockBuildStatus::new(MockPackageCode::Disabled),
-            );
-        }
-
-        let artifacts = put_artifacts(
-            context,
-            [
-                (dsc1_file.to_owned(), dsc1_contents.as_bytes().to_vec()),
-                (
-                    dsc1_bad_file.to_owned(),
-                    dsc1_bad_contents.as_bytes().to_vec(),
-                ),
-                (test1_file.to_owned(), test1_contents.to_vec()),
-            ]
-            .into(),
-        )
-        .await;
-
-        let mut dput_command = format!("dput {TEST_PROJECT} {dsc1_file}");
-        let mut created_project = TEST_PROJECT.to_owned();
-
-        if test == DputTest::Branch {
-            created_project += ":branched";
-            dput_command += &format!(" --branch-to {created_project}");
-        }
-
-        let dput = enqueue_job(
-            context,
-            JobSpec {
-                name: "dput".to_owned(),
-                dependencies: vec![artifacts.clone()],
-                script: vec![dput_command.replace(dsc1_file, dsc1_bad_file)],
-                ..Default::default()
-            },
-        );
-
-        run_obs_handler(context).await;
-        assert_eq!(MockJobState::Failed, dput.state());
-
-        let results = get_job_artifacts(&dput);
-        let build_info: ObsBuildInfo =
-            serde_yaml::from_slice(results.get(DEFAULT_BUILD_INFO).unwrap()).unwrap();
-
-        assert_eq!(build_info.project, created_project);
-        assert_eq!(build_info.package, TEST_PACKAGE_1);
-        assert_none!(build_info.rev);
-        assert_eq!(build_info.is_branched, test == DputTest::Branch);
-
-        let mut dput = enqueue_job(
-            context,
-            JobSpec {
-                name: "dput".to_owned(),
-                dependencies: vec![artifacts.clone()],
-                script: vec![dput_command.clone()],
-                ..Default::default()
-            },
-        );
-
-        run_obs_handler(context).await;
-        assert_eq!(MockJobState::Success, dput.state());
-
-        if test == DputTest::Rebuild || test == DputTest::ReusePreviousBuild {
-            context.obs_mock.add_or_update_repository(
-                &created_project,
-                TEST_REPO.to_owned(),
-                TEST_ARCH_1.to_owned(),
-                MockRepositoryCode::Building,
-            );
-            // Also test endtimes, since we now have an existing package to
-            // modify the metadata of.
-            let dir = assert_ok!(
-                context
-                    .obs_client
-                    .project(TEST_PROJECT.to_owned())
-                    .package(TEST_PACKAGE_1.to_owned())
-                    .list(None)
-                    .await
-            );
-            // Testing of reused builds never had the second arch disabled, so
-            // also add that build history.
-            if test == DputTest::ReusePreviousBuild {
-                context.obs_mock.add_job_history(
-                    TEST_PROJECT,
-                    TEST_REPO,
-                    TEST_ARCH_2,
-                    MockJobHistoryEntry {
-                        package: TEST_PACKAGE_1.to_owned(),
-                        rev: dir.rev.clone().unwrap(),
-                        srcmd5: dir.srcmd5.clone(),
-                        ..Default::default()
-                    },
-                );
-            }
-            context.obs_mock.add_job_history(
-                TEST_PROJECT,
-                TEST_REPO,
-                TEST_ARCH_1,
-                MockJobHistoryEntry {
-                    package: TEST_PACKAGE_1.to_owned(),
-                    rev: dir.rev.unwrap(),
-                    srcmd5: dir.srcmd5,
-                    ..Default::default()
-                },
-            );
-
-            context.obs_mock.set_package_build_status_for_rebuilds(
-                &created_project,
-                MockBuildStatus::new(MockPackageCode::Broken),
-            );
-            context.obs_mock.set_package_build_status(
-                &created_project,
-                TEST_REPO,
-                TEST_ARCH_1,
-                TEST_PACKAGE_1.to_owned(),
-                MockBuildStatus::new(MockPackageCode::Failed),
-            );
-
-            let status = assert_ok!(
-                context
-                    .obs_client
-                    .project(created_project.clone())
-                    .package(TEST_PACKAGE_1.to_owned())
-                    .status(TEST_REPO, TEST_ARCH_1)
-                    .await
-            );
-            assert_eq!(status.code, obs::PackageCode::Failed);
-
-            dput = enqueue_job(
-                context,
-                JobSpec {
-                    name: "dput".to_owned(),
-                    dependencies: vec![artifacts.clone()],
-                    script: vec![dput_command.clone()],
-                    ..Default::default()
-                },
-            );
-
-            run_obs_handler(context).await;
-            assert_eq!(MockJobState::Success, dput.state());
-
-            let job_log = String::from_utf8_lossy(&dput.log()).into_owned();
-            assert!(job_log.contains("unchanged"));
-
-            let status = assert_ok!(
-                context
-                    .obs_client
-                    .project(created_project.clone())
-                    .package(TEST_PACKAGE_1.to_owned())
-                    .status(TEST_REPO, TEST_ARCH_1)
-                    .await
-            );
-            assert_eq!(status.code, obs::PackageCode::Failed);
-
-            if test == DputTest::Rebuild {
-                dput = enqueue_job(
-                    context,
-                    JobSpec {
-                        name: "dput".to_owned(),
-                        dependencies: vec![artifacts.clone()],
-                        script: vec![format!("{} --rebuild-if-unchanged", dput_command)],
-                        ..Default::default()
-                    },
-                );
-
-                run_obs_handler(context).await;
-                assert_eq!(MockJobState::Success, dput.state());
-
-                let status = assert_ok!(
-                    context
-                        .obs_client
-                        .project(created_project.clone())
-                        .package(TEST_PACKAGE_1.to_owned())
-                        .status(TEST_REPO, TEST_ARCH_1)
-                        .await
-                );
-                assert_eq!(status.code, obs::PackageCode::Broken);
-
-                let job_log = String::from_utf8_lossy(&dput.log()).into_owned();
-                assert!(job_log.contains("unchanged"));
-            }
-        }
-
-        let results = get_job_artifacts(&dput);
-        let build_info: ObsBuildInfo =
-            serde_yaml::from_slice(results.get(DEFAULT_BUILD_INFO).unwrap()).unwrap();
-
-        assert_eq!(build_info.project, created_project);
-        assert_eq!(build_info.package, TEST_PACKAGE_1);
-        assert_some!(build_info.rev.as_deref());
-        assert_eq!(build_info.is_branched, test == DputTest::Branch);
-
-        assert_eq!(
-            build_info.enabled_repos.len(),
-            if test == DputTest::Rebuild { 1 } else { 2 }
-        );
-
-        let arch_1 = build_info
-            .enabled_repos
-            .get(&RepoArch {
-                repo: TEST_REPO.to_owned(),
-                arch: TEST_ARCH_1.to_owned(),
-            })
-            .unwrap();
-
-        if test == DputTest::Rebuild {
-            assert_some!(arch_1.prev_endtime_for_commit);
-        } else {
-            assert_none!(arch_1.prev_endtime_for_commit);
-
-            let arch_2 = build_info
-                .enabled_repos
-                .get(&RepoArch {
-                    repo: TEST_REPO.to_owned(),
-                    arch: TEST_ARCH_2.to_owned(),
-                })
-                .unwrap();
-            assert_none!(arch_2.prev_endtime_for_commit);
-        }
-
-        let mut dir = assert_ok!(
-            context
-                .obs_client
-                .project(created_project.clone())
-                .package(TEST_PACKAGE_1.to_owned())
-                .list(None)
-                .await
-        );
-
-        assert_eq!(dir.entries.len(), 3);
-        dir.entries.sort_by(|a, b| a.name.cmp(&b.name));
-        assert_eq!(dir.entries[0].name, "_meta");
-        assert_eq!(dir.entries[1].name, test1_file);
-        assert_eq!(dir.entries[1].size, test1_contents.len() as u64);
-        assert_eq!(dir.entries[1].md5, test1_md5);
-        assert_eq!(dir.entries[2].name, dsc1_file);
-        assert_eq!(dir.entries[2].size, dsc1_contents.len() as u64);
-        assert_eq!(dir.entries[2].md5, dsc1_md5);
-
-        (dput, build_info)
-    }
-
-    #[derive(Debug, PartialEq, Eq)]
-    enum MonitorLogTest {
-        // Test that long logs are truncated.
-        Long,
-        // Test that short logs are fully shown.
-        Short,
-        // Test that revision mismatches result in unavailable logs.
-        Unavailable,
-    }
-
-    async fn test_monitoring(
-        context: &mut TestContext,
-        dput: MockJob,
+    async fn test_monitoring_with_generation(
+        context: &mut GitLabTestContext,
+        dput: GitLabArtifactsHandle,
         build_info: &ObsBuildInfo,
         success: bool,
         dput_test: DputTest,
@@ -1022,41 +841,6 @@ mod tests {
     ) {
         const TEST_JOB_RUNNER_TAG: &str = "test-tag";
         const TEST_MONITOR_TIMEOUT: &str = "1 day";
-        const TEST_BUILD_RESULTS_DIR: &str = "results";
-        const TEST_BUILD_RESULT: &str = "test-build-result";
-        const TEST_BUILD_RESULT_CONTENTS: &[u8] = b"abcdef";
-
-        let srcmd5_prefix = format!(
-            "srcmd5 '{}' ",
-            if log_test == MonitorLogTest::Unavailable {
-                ZERO_REV_SRCMD5.to_owned()
-            } else {
-                let dir = assert_ok!(
-                    context
-                        .obs_client
-                        .project(build_info.project.to_owned())
-                        .package(TEST_PACKAGE_1.to_owned())
-                        .list(None)
-                        .await
-                );
-
-                dir.srcmd5
-            }
-        );
-
-        let (log_contents, log_vs_limit) = if log_test == MonitorLogTest::Short {
-            (srcmd5_prefix + "short", Ordering::Less)
-        } else {
-            (
-                srcmd5_prefix + "this is a long log that will need to be trimmed when printed",
-                Ordering::Greater,
-            )
-        };
-
-        assert_eq!(
-            log_contents.len().cmp(&(TEST_LOG_TAIL as usize)),
-            log_vs_limit
-        );
 
         let mut generate_command = format!(
             "generate-monitor {TEST_JOB_RUNNER_TAG} \
@@ -1064,22 +848,19 @@ mod tests {
                 --rules '[{{a: 1}}, {{b: 2}}]'"
         );
         if download_binaries {
-            generate_command += &format!(" --download-build-results-to {TEST_BUILD_RESULTS_DIR}");
+            generate_command +=
+                &format!(" --download-build-results-to {MONITOR_TEST_BUILD_RESULTS_DIR}");
         }
-        let generate = enqueue_job(
-            context,
-            JobSpec {
-                name: "generate".to_owned(),
-                dependencies: vec![dput.clone()],
-                script: vec![generate_command],
-                ..Default::default()
-            },
-        );
 
-        run_obs_handler(context).await;
-        assert_eq!(generate.state(), MockJobState::Success);
+        let generate = context
+            .run()
+            .command(generate_command)
+            .artifacts(dput.clone())
+            .go()
+            .await;
+        assert!(generate.ok());
 
-        let results = get_job_artifacts(&generate);
+        let results = context.fetch_artifacts(&generate.artifacts()).await;
         let pipeline_yaml: serde_yaml::Value = assert_ok!(serde_yaml::from_slice(
             results.get(DEFAULT_MONITOR_PIPELINE).unwrap()
         ));
@@ -1088,49 +869,6 @@ mod tests {
         assert_eq!(pipeline_map.len(), build_info.enabled_repos.len());
 
         for repo in build_info.enabled_repos.keys() {
-            // Sanity check this, even though test_dput should have already
-            // checked it.
-            assert_eq!(repo.repo, TEST_REPO);
-            assert!(
-                repo.arch == TEST_ARCH_1 || repo.arch == TEST_ARCH_2,
-                "unexpected arch '{}'",
-                repo.arch
-            );
-
-            context.obs_mock.set_package_build_status(
-                &build_info.project,
-                &repo.repo,
-                &repo.arch,
-                TEST_PACKAGE_1.to_owned(),
-                MockBuildStatus::new(if success {
-                    MockPackageCode::Succeeded
-                } else {
-                    MockPackageCode::Failed
-                }),
-            );
-            context.obs_mock.add_completed_build_log(
-                &build_info.project,
-                TEST_REPO,
-                &repo.arch,
-                TEST_PACKAGE_1.to_owned(),
-                MockBuildLog::new(log_contents.to_owned()),
-                success,
-            );
-            context.obs_mock.set_package_binaries(
-                &build_info.project,
-                TEST_REPO,
-                &repo.arch,
-                TEST_PACKAGE_1.to_owned(),
-                [(
-                    TEST_BUILD_RESULT.to_owned(),
-                    MockBinary {
-                        contents: TEST_BUILD_RESULT_CONTENTS.to_vec(),
-                        mtime: SystemTime::now(),
-                    },
-                )]
-                .into(),
-            );
-
             let monitor_job_name = format!(
                 "{}-{}-{}",
                 DEFAULT_PIPELINE_JOB_PREFIX, TEST_REPO, &repo.arch
@@ -1163,7 +901,7 @@ mod tests {
             if download_binaries {
                 assert_eq!(
                     &artifact_paths,
-                    &[DEFAULT_BUILD_LOG, TEST_BUILD_RESULTS_DIR]
+                    &[DEFAULT_BUILD_LOG, MONITOR_TEST_BUILD_RESULTS_DIR]
                 );
             } else {
                 assert_eq!(&artifact_paths, &[DEFAULT_BUILD_LOG]);
@@ -1203,214 +941,68 @@ mod tests {
                 .map(|v| v.as_str().unwrap().to_owned())
                 .collect::<Vec<_>>();
 
-            let monitor = enqueue_job(
+            test_monitoring(
                 context,
-                JobSpec {
-                    name: monitor_job_name.clone(),
-                    dependencies: vec![dput.clone()],
-                    script: script.clone(),
-                    ..Default::default()
-                },
-            );
-
-            if dput_test != DputTest::ReusePreviousBuild {
-                // Update the endtime in the background, otherwise the monitor
-                // will hang forever waiting.
-                let mock = context.obs_mock.clone();
-                let build_info_2 = build_info.clone();
-                let repo_2 = repo.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(OLD_STATUS_SLEEP_DURATION * 10).await;
-                    mock.add_job_history(
-                        &build_info_2.project,
-                        &repo_2.repo,
-                        &repo_2.arch,
-                        MockJobHistoryEntry {
-                            package: build_info_2.package,
-                            endtime: SystemTime::UNIX_EPOCH + Duration::from_secs(999),
-                            srcmd5: build_info_2.srcmd5.unwrap(),
-                            ..Default::default()
-                        },
-                    );
-                });
-            }
-
-            assert_ok!(
-                tokio::time::timeout(OLD_STATUS_SLEEP_DURATION * 20, run_obs_handler(context))
-                    .await
-            );
-            assert_eq!(
-                monitor.state(),
-                if success && log_test != MonitorLogTest::Unavailable {
-                    MockJobState::Success
-                } else {
-                    MockJobState::Failed
-                }
-            );
-
-            let job_log = String::from_utf8_lossy(&monitor.log()).into_owned();
-
-            assert_eq!(
-                job_log.contains("unavailable"),
-                log_test == MonitorLogTest::Unavailable
-            );
-
-            // If we reused a previous build, we're not waiting for a new build,
-            // so don't check for an old build status.
-            let build_actually_occurred = dput_test != DputTest::ReusePreviousBuild;
-            assert_eq!(
-                job_log.contains("Waiting for build status"),
-                build_actually_occurred
-            );
-
-            assert_eq!(
-                job_log.contains(&log_contents),
-                !success && log_test == MonitorLogTest::Short
-            );
-
-            if !success && log_test == MonitorLogTest::Long {
-                let log_bytes = log_contents.as_bytes();
-                let truncated_log_bytes = &log_bytes[log_bytes.len() - (TEST_LOG_TAIL as usize)..];
-                assert!(job_log.contains(String::from_utf8_lossy(truncated_log_bytes).as_ref()));
-            }
-
-            let results = get_job_artifacts(&monitor);
-            let build_result_path = Utf8Path::new(TEST_BUILD_RESULTS_DIR)
-                .join(TEST_BUILD_RESULT)
-                .into_string();
-            let mut has_built_result = false;
-
-            if log_test != MonitorLogTest::Unavailable {
-                let full_log = results.get(DEFAULT_BUILD_LOG).unwrap();
-                assert_eq!(log_contents, String::from_utf8_lossy(full_log));
-
-                if success && download_binaries {
-                    let build_result = results.get(&build_result_path).unwrap();
-                    assert_eq!(TEST_BUILD_RESULT_CONTENTS, &build_result[..]);
-
-                    has_built_result = true;
-                }
-            }
-
-            if !has_built_result {
-                assert_none!(results.get(&build_result_path));
-            }
+                dput.clone(),
+                build_info,
+                repo,
+                &script,
+                success,
+                dput_test,
+                log_test,
+                download_binaries,
+            )
+            .await;
         }
     }
 
     async fn test_prune(
-        context: &mut TestContext,
-        dput: MockJob,
+        context: &mut GitLabTestContext,
+        dput: GitLabArtifactsHandle,
         build_info: &ObsBuildInfo,
         only_if_job_unsuccessful: bool,
     ) {
-        let prune = enqueue_job(
-            context,
-            JobSpec {
-                name: "prune".to_owned(),
-                script: vec!["prune".to_owned()],
-                ..Default::default()
-            },
-        );
-
-        run_obs_handler(context).await;
-        assert_eq!(MockJobState::Failed, prune.state());
-
-        let prune = enqueue_job(
-            context,
-            JobSpec {
-                name: "prune".to_owned(),
-                script: vec!["prune --ignore-missing-build-info".to_owned()],
-                ..Default::default()
-            },
-        );
-
-        run_obs_handler(context).await;
-        assert_eq!(MockJobState::Success, prune.state());
-
-        assert!(String::from_utf8_lossy(&prune.log()).contains("Skipping prune"));
+        test_prune_missing_build_info(context).await;
 
         let prune = if only_if_job_unsuccessful {
-            let prune = enqueue_job(
-                context,
-                JobSpec {
-                    name: "prune".to_owned(),
-                    dependencies: vec![dput.clone()],
-                    script: vec!["echo".to_owned()],
-                    after_script: vec!["prune --only-if-job-unsuccessful".to_owned()],
-                    ..Default::default()
-                },
-            );
+            let prune = context
+                .run()
+                .command("echo")
+                .after_command("prune --only-if-job-unsuccessful")
+                .artifacts(dput.clone())
+                .go()
+                .await;
 
-            run_obs_handler(context).await;
-            assert_eq!(MockJobState::Success, prune.state());
-
-            assert!(String::from_utf8_lossy(&prune.log()).contains("Skipping prune"));
+            assert!(prune.ok());
+            assert!(prune.log().contains("Skipping prune"));
 
             assert_ok!(
                 context
-                    .obs_client
+                    .obs()
+                    .client
                     .project(build_info.project.clone())
                     .package(TEST_PACKAGE_1.to_owned())
                     .list(None)
                     .await
             );
 
-            enqueue_job(
-                context,
-                JobSpec {
-                    name: "prune".to_owned(),
-
-                    dependencies: vec![dput.clone()],
-                    script: vec!["echo --fail".to_owned()],
-                    after_script: vec!["prune --only-if-job-unsuccessful".to_owned()],
-                    ..Default::default()
-                },
-            )
+            context
+                .run()
+                .command("echo --fail")
+                .after_command("prune --only-if-job-unsuccessful")
+                .artifacts(dput.clone())
+                .go()
+                .await
         } else {
-            enqueue_job(
-                context,
-                JobSpec {
-                    name: "prune".to_owned(),
-
-                    dependencies: vec![dput.clone()],
-                    script: vec!["prune".to_owned()],
-                    ..Default::default()
-                },
-            )
+            context
+                .run()
+                .command("prune")
+                .artifacts(dput.clone())
+                .go()
+                .await
         };
 
-        run_obs_handler(context).await;
-        assert_eq!(
-            prune.state(),
-            if only_if_job_unsuccessful {
-                MockJobState::Failed
-            } else {
-                MockJobState::Success
-            }
-        );
-
-        if build_info.is_branched {
-            assert_err!(
-                context
-                    .obs_client
-                    .project(build_info.project.clone())
-                    .package(TEST_PACKAGE_1.to_owned())
-                    .list(None)
-                    .await
-            );
-        } else {
-            assert!(String::from_utf8_lossy(&prune.log()).contains("package was not branched"));
-
-            assert_ok!(
-                context
-                    .obs_client
-                    .project(build_info.project.clone())
-                    .package(TEST_PACKAGE_1.to_owned())
-                    .list(None)
-                    .await
-            );
-        }
+        test_prune_deleted_package_1_if_branched(context, build_info, &prune).await;
     }
 
     #[rstest]
@@ -1436,7 +1028,7 @@ mod tests {
         with_context(async |mut context| {
             let (dput, build_info) = test_dput(&mut context, dput_test).await;
 
-            test_monitoring(
+            test_monitoring_with_generation(
                 &mut context,
                 dput.clone(),
                 &build_info,
@@ -1449,7 +1041,7 @@ mod tests {
 
             test_prune(
                 &mut context,
-                dput,
+                dput.clone(),
                 &build_info,
                 prune_only_if_job_unsuccessful,
             )
@@ -1462,27 +1054,18 @@ mod tests {
     #[tokio::test]
     async fn test_variable_expansion() {
         with_context(async |mut context| {
-            let job = enqueue_job(
-                &context,
-                JobSpec {
-                    name: "expansion".to_owned(),
-                    variables: [
-                        ("ESCAPED".to_owned(), "this should not appear".to_owned()),
-                        ("QUOTED".to_owned(), "spaces should be preserved".to_owned()),
-                        ("RECURSIVE".to_owned(), "recursion($RECURSIVE)".to_owned()),
-                    ]
-                    .into(),
-                    script: vec!["echo --sep ; $MISSING $$ESCAPED $QUOTED $RECURSIVE".to_owned()],
-                    ..Default::default()
-                },
-            );
+            let expansion = context
+                .run()
+                .variable("ESCAPED", "this should not appear")
+                .variable("QUOTED", "spaces should be preserved")
+                .variable("RECURSIVE", "recursion($RECURSIVE)")
+                .command("echo --sep ; $MISSING $$ESCAPED $QUOTED $RECURSIVE")
+                .go()
+                .await;
+            assert!(expansion.ok());
 
-            run_obs_handler(&mut context).await;
-            assert_eq!(job.state(), MockJobState::Success);
-
-            let job_log = String::from_utf8_lossy(&job.log()).into_owned();
             assert_eq!(
-                job_log.lines().last().unwrap(),
+                expansion.log().lines().last().unwrap(),
                 ";$ESCAPED;spaces should be preserved;recursion()"
             );
         })
@@ -1493,62 +1076,31 @@ mod tests {
     #[tokio::test]
     async fn test_flag_parsing() {
         with_context(async |mut context| {
-            let job = enqueue_job(
-                &context,
-                JobSpec {
-                    name: "flag".to_owned(),
-                    script: vec!["echo --uppercase false".to_owned()],
-                    ..Default::default()
-                },
-            );
+            let echo = context.run().command("echo --uppercase false").go().await;
+            assert!(echo.ok());
 
-            run_obs_handler(&mut context).await;
-            assert_eq!(job.state(), MockJobState::Success);
+            assert_eq!(echo.log().lines().last().unwrap(), "FALSE");
 
-            let job_log = String::from_utf8_lossy(&job.log()).into_owned();
-            assert_eq!(job_log.lines().last().unwrap(), "FALSE");
+            let echo = context
+                .run()
+                .command("echo --uppercase=false true")
+                .go()
+                .await;
+            assert!(echo.ok());
 
-            let job = enqueue_job(
-                &context,
-                JobSpec {
-                    name: "flag".to_owned(),
-                    script: vec!["echo --uppercase=false true".to_owned()],
-                    ..Default::default()
-                },
-            );
+            assert_eq!(echo.log().lines().last().unwrap(), "true");
 
-            run_obs_handler(&mut context).await;
-            assert_eq!(job.state(), MockJobState::Success);
+            let echo = context
+                .run()
+                .command("echo --uppercase=true false")
+                .go()
+                .await;
+            assert!(echo.ok());
 
-            let job_log = String::from_utf8_lossy(&job.log()).into_owned();
-            assert_eq!(job_log.lines().last().unwrap(), "true");
+            assert_eq!(echo.log().lines().last().unwrap(), "FALSE");
 
-            let job = enqueue_job(
-                &context,
-                JobSpec {
-                    name: "flag".to_owned(),
-                    script: vec!["echo --uppercase=true false".to_owned()],
-                    ..Default::default()
-                },
-            );
-
-            run_obs_handler(&mut context).await;
-            assert_eq!(job.state(), MockJobState::Success);
-
-            let job_log = String::from_utf8_lossy(&job.log()).into_owned();
-            assert_eq!(job_log.lines().last().unwrap(), "FALSE");
-
-            let job = enqueue_job(
-                &context,
-                JobSpec {
-                    name: "flag".to_owned(),
-                    script: vec!["echo --uppercase=X false".to_owned()],
-                    ..Default::default()
-                },
-            );
-
-            run_obs_handler(&mut context).await;
-            assert_eq!(job.state(), MockJobState::Failed);
+            let echo = context.run().command("echo --uppercase=X false").go().await;
+            assert!(!echo.ok());
         })
         .await;
     }
@@ -1569,8 +1121,6 @@ mod tests {
         )]
         test: Option<GenerateMonitorTimeoutLocation>,
     ) {
-        use obo_core::build_meta::CommitBuildInfo;
-
         const TEST_MONITOR_TIMEOUT: &str = "10 minutes";
 
         with_context(async |mut context| {
@@ -1592,49 +1142,40 @@ mod tests {
                 .into(),
             };
 
-            let build_info = put_artifacts(
-                &mut context,
-                [(
-                    DEFAULT_BUILD_INFO.to_owned(),
-                    serde_yaml::to_string(&build_info).unwrap().into_bytes(),
-                )]
-                .into(),
-            )
-            .await;
-
-            let mut generate_spec = JobSpec {
-                name: "generate".to_owned(),
-                script: vec!["generate-monitor tag".to_owned()],
-                dependencies: vec![build_info],
-                ..Default::default()
-            };
-
-            if test == Some(GenerateMonitorTimeoutLocation::Argument) {
-                use std::fmt::Write;
-                write!(
-                    &mut generate_spec.script[0],
-                    " --job-timeout '{TEST_MONITOR_TIMEOUT}'"
-                )
-                .unwrap();
-            }
-
-            let generate = enqueue_job(&context, generate_spec);
-
-            if test == Some(GenerateMonitorTimeoutLocation::HandlerOption) {
-                run_obs_handler_with_options(
-                    &mut context,
-                    HandlerOptions {
-                        default_monitor_job_timeout: Some(TEST_MONITOR_TIMEOUT.to_owned()),
-                        ..DEFAULT_HANDLER_OPTIONS
-                    },
+            let build_info = context
+                .inject_artifacts(
+                    [(
+                        DEFAULT_BUILD_INFO.to_owned(),
+                        serde_yaml::to_string(&build_info).unwrap().into_bytes(),
+                    )]
+                    .into(),
                 )
                 .await;
-            } else {
-                run_obs_handler(&mut context).await;
-            }
-            assert_eq!(generate.state(), MockJobState::Success);
 
-            let results = get_job_artifacts(&generate);
+            let generate_builder = if test == Some(GenerateMonitorTimeoutLocation::Argument) {
+                context.run().command(format!(
+                    "generate-monitor tag --job-timeout '{TEST_MONITOR_TIMEOUT}'"
+                ))
+            } else {
+                context.run().command("generate-monitor tag")
+            }
+            .artifacts(build_info);
+
+            let generate = if test == Some(GenerateMonitorTimeoutLocation::HandlerOption) {
+                generate_builder
+                    .obs_job_handler(HandlerOptions {
+                        default_monitor_job_timeout: Some(TEST_MONITOR_TIMEOUT.to_owned()),
+                        ..DEFAULT_HANDLER_OPTIONS
+                    })
+                    .go()
+                    .await
+            } else {
+                generate_builder.go().await
+            };
+
+            assert!(generate.ok());
+
+            let results = context.fetch_artifacts(&generate.artifacts()).await;
             let pipeline_yaml: serde_yaml::Value = assert_ok!(serde_yaml::from_slice(
                 results.get(DEFAULT_MONITOR_PIPELINE).unwrap()
             ));

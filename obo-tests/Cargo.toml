@@ -1,0 +1,17 @@
+[package]
+name = "obo-tests"
+description = "OBS Build Orchestrator — shared tests for different frontends"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+async-trait.workspace = true
+camino.workspace = true
+claims.workspace = true
+obo-core = { path = "../obo-core" }
+obo-test-support = { path = "../obo-test-support" }
+open-build-service-api.workspace = true
+open-build-service-mock.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true

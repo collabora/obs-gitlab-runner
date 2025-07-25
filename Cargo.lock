@@ -1534,6 +1534,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "obo-tests"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "camino",
+ "claims",
+ "obo-core",
+ "obo-test-support",
+ "open-build-service-api",
+ "open-build-service-mock",
+ "serde_yaml",
+ "tokio",
+]
+
+[[package]]
 name = "obs-gitlab-runner"
 version = "0.1.8"
 dependencies = [
@@ -1548,6 +1563,7 @@ dependencies = [
  "gitlab-runner-mock",
  "obo-core",
  "obo-test-support",
+ "obo-tests",
  "open-build-service-api",
  "open-build-service-mock",
  "rstest",

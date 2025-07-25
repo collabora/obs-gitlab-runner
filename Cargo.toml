@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
   "obo-core",
+  "obo-tests",
   "obo-test-support",
   "obs-gitlab-runner"
 ]

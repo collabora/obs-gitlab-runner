@@ -51,7 +51,11 @@ jobs:
         with:
           toolchain: "1.88"
           components: clippy
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - uses: clechasseur/rs-clippy-check@v4.0.5
+        with:
+          # setup-rust-toolchain already sets `-D warnings`, but we leave this
+          # here to make the behavior explicit.
+          args: --all-targets --all-features -- -D warnings
 
   clippy-latest:
     name: cargo clippy latest
@@ -63,7 +67,11 @@ jobs:
         with:
           toolchain: stable
           components: clippy
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+          # Defaults to '-D warnings', so clear it out manually.
+          rustflags: ''
+      - uses: clechasseur/rs-clippy-check@v4.0.5
+        with:
+          args: --all-targets --all-features
 
   minimal-dependencies:
     name: minimal direct dependencies

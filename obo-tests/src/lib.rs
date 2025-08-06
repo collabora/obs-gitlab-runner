@@ -323,10 +323,8 @@ pub async fn test_dput<C: TestContext>(
 
     let arch_1 = build_info
         .enabled_repos
-        .get(&RepoArch {
-            repo: TEST_REPO.to_owned(),
-            arch: TEST_ARCH_1.to_owned(),
-        })
+        .iter()
+        .find(|e| e.repo_arch.repo == TEST_REPO && e.repo_arch.arch == TEST_ARCH_1)
         .unwrap();
 
     if test == DputTest::Rebuild {
@@ -336,10 +334,8 @@ pub async fn test_dput<C: TestContext>(
 
         let arch_2 = build_info
             .enabled_repos
-            .get(&RepoArch {
-                repo: TEST_REPO.to_owned(),
-                arch: TEST_ARCH_2.to_owned(),
-            })
+            .iter()
+            .find(|e| e.repo_arch.repo == TEST_REPO && e.repo_arch.arch == TEST_ARCH_2)
             .unwrap();
         assert_none!(arch_2.prev_endtime_for_commit);
     }

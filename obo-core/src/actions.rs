@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::SeekFrom};
+use std::io::SeekFrom;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{ArgAction, Parser};
@@ -11,10 +11,7 @@ use tracing::{debug, instrument};
 use crate::{
     artifacts::{ArtifactDirectory, ArtifactReader, ArtifactWriter, MissingArtifactToNone},
     binaries::download_binaries,
-    build_meta::{
-        BuildHistoryRetrieval, BuildMeta, BuildMetaOptions, CommitBuildInfo, DisabledRepos,
-        RepoArch,
-    },
+    build_meta::{BuildHistoryRetrieval, BuildMeta, BuildMetaOptions, DisabledRepos, EnabledRepo},
     monitor::{MonitoredPackage, ObsMonitor, PackageCompletion, PackageMonitoringOptions},
     outputln,
     prune::prune_branch,
@@ -22,7 +19,7 @@ use crate::{
     upload::ObsDscUploader,
 };
 
-pub const DEFAULT_BUILD_INFO: &str = "build-info.yml";
+pub const DEFAULT_BUILD_INFO: &str = "build-info.json";
 pub const DEFAULT_BUILD_LOG: &str = "build.log";
 
 // Our flags can all take explicit values, because it makes it easier to
@@ -155,7 +152,7 @@ pub struct ObsBuildInfo {
     pub rev: Option<String>,
     pub srcmd5: Option<String>,
     pub is_branched: bool,
-    pub enabled_repos: HashMap<RepoArch, CommitBuildInfo>,
+    pub enabled_repos: Vec<EnabledRepo>,
 }
 
 impl ObsBuildInfo {
@@ -164,7 +161,7 @@ impl ObsBuildInfo {
         artifacts
             .save_with(path, async |file: &mut ArtifactWriter| {
                 let data =
-                    serde_yaml::to_string(&self).wrap_err("Failed to serialize build info")?;
+                    serde_json::to_string(&self).wrap_err("Failed to serialize build info")?;
                 file.write_all(data.as_bytes())
                     .await
                     .wrap_err("Failed to write build info file")?;
@@ -217,7 +214,7 @@ impl Actions {
             rev: None,
             srcmd5: None,
             is_branched,
-            enabled_repos: HashMap::new(),
+            enabled_repos: vec![],
         };
         debug!("Saving initial build info: {:?}", build_info);
         build_info
@@ -414,7 +411,7 @@ impl Actions {
             artifacts.read_string(&args.build_info).await?
         };
 
-        let build_info: ObsBuildInfo = serde_yaml::from_str(&build_info_data)
+        let build_info: ObsBuildInfo = serde_json::from_str(&build_info_data)
             .wrap_err("Failed to parse provided build info file")?;
 
         if build_info.is_branched {

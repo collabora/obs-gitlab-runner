@@ -8,7 +8,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   check:
@@ -87,6 +86,9 @@ jobs:
     name: Docker image build
     runs-on: ubuntu-latest
     needs: [check, fmt, test, clippy]
+    strategy:
+      matrix:
+        target: [obo-cli, obs-gitlab-runner]
 
     permissions:
       contents: read
@@ -102,12 +104,13 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.target }}
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         if: github.event_name != 'pull_request'
         with:
           context: .
+          file: Dockerfile.${{ matrix.target }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

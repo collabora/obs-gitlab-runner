@@ -82,7 +82,7 @@ In order to connect to OBS, three variables must be set (generally within the
 ```bash
 dput PROJECT DSC_FILE
   [--branch-to BRANCHED_PROJECT]
-  [--build-info-out BUILD_INFO_FILE=build-info.yml]
+  [--build-info-out BUILD_INFO_FILE=build-info.json]
   [--rebuild-if-unchanged]
 ```
 
@@ -92,7 +92,7 @@ within, will be removed.
 
 Metadata information on the uploaded revision, such as the revision number,
 project name, and package name, will be saved into the file specified by
-`--build-info-out` (default is `build-info.yml`). This file is **required** by
+`--build-info-out` (default is `build-info.json`). This file is **required** by
 the `generate-monitor` and `prune` steps. Do note that, if `--branch-to` is
 given, the file will be written *immediately* after the branch takes place (i.e.
 before the upload); that way, if the upload fails, the branched project can still
@@ -109,7 +109,7 @@ testing builds on MRs; you can create an OBS branch named after the MR's Git
 branch, and then builds can take place there without interfering with your main
 projects.
 
-##### `--build-info-out BUILD_INFO_FILE=build-info.yml`
+##### `--build-info-out BUILD_INFO_FILE=build-info.json`
 
 Changes the filename that the build info will be written to.
 
@@ -130,7 +130,7 @@ operation, there will *always* be a change to upload.
 generate-monitor RUNNER_TAG
   [--rules RULES]
   [--download-build-results-to BUILD_RESULTS_DIR]
-  [--build-info BUILD_INFO_FILE=build-info.yml]
+  [--build-info BUILD_INFO_FILE=build-info.json]
   [--pipeline-out PIPELINE_FILE=obs.yml]
   [--job-prefix MONITOR_JOB_PREFIX=obs]
   [--job-timeout MONITOR_JOB_TIMEOUT]
@@ -199,7 +199,7 @@ dput-and-generate:
 After a monitoring job completes, download the build results from OBS to the
 given `BUILD_RESULTS_DIR`, and upload it as a GitLab build artifact..
 
-##### `--build-info BUILD_INFO_FILE=build-info.yml`
+##### `--build-info BUILD_INFO_FILE=build-info.json`
 
 Specifies the name of the build info file to read. In particular, if a different
 build info filename was used with `dput` via
@@ -233,7 +233,7 @@ Changes the filename each monitoring job will save the build log into.
 
 ```bash
 prune
-  [--build-info BUILD_INFO_FILE=build-info.yml]
+  [--build-info BUILD_INFO_FILE=build-info.json]
   [--ignore-missing-build-info]
   [--only-if-job-unsuccessful]
 ```
@@ -242,7 +242,7 @@ If a branch occurred, deletes the branched package and, if now empty, project,
 using the information from the build info file. (If no branching occurred, this
 does nothing.)
 
-##### `--build-info BUILD_INFO_FILE=build-info.yml`
+##### `--build-info BUILD_INFO_FILE=build-info.json`
 
 Specifies the name of the build info file to read. In particular, if a different
 build info filename was used with `dput` via

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use color_eyre::eyre::{Context, Result};
 use obo_core::{
     actions::{DownloadBinariesAction, MonitorAction},
-    build_meta::{CommitBuildInfo, RepoArch},
+    build_meta::{EnabledRepo, RepoArch},
 };
 use serde::Serialize;
 use tracing::instrument;
@@ -51,7 +51,7 @@ pub fn generate_monitor_pipeline(
     package: &str,
     rev: &str,
     srcmd5: &str,
-    enabled_repos: &HashMap<RepoArch, CommitBuildInfo>,
+    enabled_repos: &[EnabledRepo],
     options: GeneratePipelineOptions,
 ) -> Result<String> {
     let rules: Option<serde_yaml::Sequence> = options
@@ -62,7 +62,9 @@ pub fn generate_monitor_pipeline(
         .wrap_err("Failed to parse provided rules")?;
 
     let mut jobs = HashMap::new();
-    for (RepoArch { repo, arch }, info) in enabled_repos {
+    for enabled in enabled_repos {
+        let RepoArch { repo, arch } = &enabled.repo_arch;
+
         let mut script = vec![];
         let mut artifact_paths = vec![];
 
@@ -75,7 +77,7 @@ pub fn generate_monitor_pipeline(
                 rev: rev.to_owned(),
                 srcmd5: srcmd5.to_owned(),
                 build_log_out: options.build_log_out.clone(),
-                prev_endtime_for_commit: info.prev_endtime_for_commit,
+                prev_endtime_for_commit: enabled.prev_endtime_for_commit,
             }
             .generate_command(),
         );

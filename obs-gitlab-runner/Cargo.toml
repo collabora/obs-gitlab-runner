@@ -19,6 +19,7 @@ obo-core = { path = "../obo-core" }
 obo-test-support = { path = "../obo-test-support" }
 open-build-service-api.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 serde_yaml.workspace = true
 shellexpand = "3.1"
 shell-words.workspace = true

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "obo-cli",
   "obo-core",
   "obo-tests",
   "obo-test-support",

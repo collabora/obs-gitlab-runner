@@ -1494,6 +1494,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "obo-cli"
+version = "0.1.8"
+dependencies = [
+ "async-trait",
+ "camino",
+ "claims",
+ "clap",
+ "color-eyre",
+ "gitlab-runner-mock",
+ "obo-core",
+ "obo-test-support",
+ "obo-tests",
+ "open-build-service-api",
+ "open-build-service-mock",
+ "rstest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-error",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
 name = "obo-core"
 version = "0.1.0"
 dependencies = [
@@ -2579,6 +2606,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e727b36a1a0e8b74c376ac2211e40c2c8af09fb4013c60d910495810f008e9b"
 dependencies = [
  "rustls",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-stream"
+version = "0.1.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eca58d7bba4a75707817a2c44174253f9236b2d5fbd055602e9d5c07c139a047"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
  "tokio",
 ]
 

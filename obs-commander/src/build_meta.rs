@@ -14,7 +14,9 @@ pub struct RepoArch {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct CommitBuildInfo {
+pub struct EnabledRepo {
+    #[serde(flatten)]
+    pub repo_arch: RepoArch,
     pub prev_endtime_for_commit: Option<u64>,
 }
 
@@ -237,26 +239,19 @@ impl BuildMeta {
         Ok(())
     }
 
-    pub fn get_commit_build_info(&self, srcmd5: &str) -> HashMap<RepoArch, CommitBuildInfo> {
-        let mut repos = HashMap::new();
-
-        for (repo, jobhist) in &self.repos {
-            let prev_endtime_for_commit = jobhist
-                .jobhist
-                .iter()
-                .filter(|e| e.srcmd5 == srcmd5)
-                .next_back()
-                .map(|e| e.endtime);
-
-            repos.insert(
-                repo.clone(),
-                CommitBuildInfo {
-                    prev_endtime_for_commit,
-                },
-            );
-        }
-
-        repos
+    pub fn get_commit_build_info(&self, srcmd5: &str) -> Vec<EnabledRepo> {
+        self.repos
+            .iter()
+            .map(|(repo, jobhist)| EnabledRepo {
+                repo_arch: repo.clone(),
+                prev_endtime_for_commit: jobhist
+                    .jobhist
+                    .iter()
+                    .filter(|e| e.srcmd5 == srcmd5)
+                    .next_back()
+                    .map(|e| e.endtime),
+            })
+            .collect()
     }
 }
 
@@ -360,10 +355,10 @@ mod tests {
 
         let build_info = meta.get_commit_build_info(&srcmd5_1);
 
-        let arch_1 = assert_some!(build_info.get(&repo_arch_1));
+        let arch_1 = assert_some!(build_info.iter().find(|e| e.repo_arch == repo_arch_1));
         assert_some_eq!(arch_1.prev_endtime_for_commit, endtime_1);
 
-        let arch_2 = assert_some!(build_info.get(&repo_arch_2));
+        let arch_2 = assert_some!(build_info.iter().find(|e| e.repo_arch == repo_arch_2));
         assert_none!(arch_2.prev_endtime_for_commit);
 
         let meta = assert_ok!(
@@ -385,9 +380,9 @@ mod tests {
 
         let build_info = meta.get_commit_build_info(&srcmd5_1);
 
-        let arch_1 = assert_some!(build_info.get(&repo_arch_1));
+        let arch_1 = assert_some!(build_info.iter().find(|e| e.repo_arch == repo_arch_1));
         assert_none!(arch_1.prev_endtime_for_commit);
-        let arch_2 = assert_some!(build_info.get(&repo_arch_2));
+        let arch_2 = assert_some!(build_info.iter().find(|e| e.repo_arch == repo_arch_2));
         assert_none!(arch_2.prev_endtime_for_commit);
 
         assert!(meta.repos.contains_key(&repo_arch_2));
@@ -431,7 +426,7 @@ mod tests {
 
         let build_info = meta.get_commit_build_info(&srcmd5_2);
 
-        let arch_1 = assert_some!(build_info.get(&repo_arch_2));
+        let arch_1 = assert_some!(build_info.iter().find(|e| e.repo_arch == repo_arch_2));
         assert_some_eq!(arch_1.prev_endtime_for_commit, endtime_2);
 
         mock.add_job_history(
@@ -465,13 +460,13 @@ mod tests {
 
         let build_info = meta.get_commit_build_info(&srcmd5_1);
 
-        let arch_2 = assert_some!(build_info.get(&repo_arch_2));
+        let arch_2 = assert_some!(build_info.iter().find(|e| e.repo_arch == repo_arch_2));
         assert_some_eq!(arch_2.prev_endtime_for_commit, endtime_1);
 
         meta.clear_stored_history();
 
         let build_info = meta.get_commit_build_info(&srcmd5_1);
-        let arch_2 = assert_some!(build_info.get(&repo_arch_2));
+        let arch_2 = assert_some!(build_info.iter().find(|e| e.repo_arch == repo_arch_2));
         assert_none!(arch_2.prev_endtime_for_commit);
 
         mock.set_package_build_status(

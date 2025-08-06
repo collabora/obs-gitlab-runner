@@ -2050,7 +2050,7 @@ dependencies = [
  "rfc822-like",
  "rstest",
  "serde",
- "serde_yaml",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.12",
  "tokio",

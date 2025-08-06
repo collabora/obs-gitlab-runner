@@ -447,7 +447,7 @@ mod tests {
     use claims::*;
     use gitlab_runner::{GitlabLayer, Runner, RunnerBuilder};
     use gitlab_runner_mock::*;
-    use obs_commander::build_meta::{CommitBuildInfo, RepoArch};
+    use obs_commander::build_meta::{EnabledRepo, RepoArch};
     use obs_commander_test_support::*;
     use obs_commander_tests::*;
     use rstest::rstest;
@@ -867,10 +867,10 @@ mod tests {
 
         assert_eq!(pipeline_map.len(), build_info.enabled_repos.len());
 
-        for repo in build_info.enabled_repos.keys() {
+        for enabled in &build_info.enabled_repos {
             let monitor_job_name = format!(
                 "{}-{}-{}",
-                DEFAULT_PIPELINE_JOB_PREFIX, TEST_REPO, &repo.arch
+                DEFAULT_PIPELINE_JOB_PREFIX, TEST_REPO, &enabled.repo_arch.arch
             );
 
             let monitor_map = pipeline_yaml
@@ -944,7 +944,7 @@ mod tests {
                 context,
                 dput.clone(),
                 build_info,
-                repo,
+                &enabled.repo_arch,
                 &script,
                 success,
                 dput_test,
@@ -1129,16 +1129,14 @@ mod tests {
                 rev: Some("1".to_owned()),
                 srcmd5: Some("abc".to_owned()),
                 is_branched: false,
-                enabled_repos: [(
-                    RepoArch {
+                enabled_repos: vec![EnabledRepo {
+                    repo_arch: RepoArch {
                         repo: TEST_REPO.to_owned(),
                         arch: TEST_ARCH_1.to_owned(),
                     },
-                    CommitBuildInfo {
-                        prev_endtime_for_commit: None,
-                    },
-                )]
-                .into(),
+
+                    prev_endtime_for_commit: None,
+                }],
             };
 
             let build_info = context

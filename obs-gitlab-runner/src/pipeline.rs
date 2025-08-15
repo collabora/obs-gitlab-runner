@@ -1,10 +1,9 @@
-use std::{collections::HashMap, fs::File};
+use std::collections::HashMap;
 
 use color_eyre::eyre::{Context, Result};
+use obs_commander::build_meta::{EnabledRepo, RepoArch};
 use serde::Serialize;
 use tracing::instrument;
-
-use crate::build_meta::{CommitBuildInfo, RepoArch};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PipelineDownloadBinaries {
@@ -59,9 +58,9 @@ pub fn generate_monitor_pipeline(
     package: &str,
     rev: &str,
     srcmd5: &str,
-    enabled_repos: &HashMap<RepoArch, CommitBuildInfo>,
+    enabled_repos: &[EnabledRepo],
     options: GeneratePipelineOptions,
-) -> Result<File> {
+) -> Result<String> {
     let rules: Option<serde_yaml::Sequence> = options
         .rules
         .as_deref()
@@ -70,7 +69,9 @@ pub fn generate_monitor_pipeline(
         .wrap_err("Failed to parse provided rules")?;
 
     let mut jobs = HashMap::new();
-    for (RepoArch { repo, arch }, info) in enabled_repos {
+    for enabled in enabled_repos {
+        let RepoArch { repo, arch } = &enabled.repo_arch;
+
         let mut script = vec![];
         let mut artifact_paths = vec![];
 
@@ -86,7 +87,7 @@ pub fn generate_monitor_pipeline(
             ("srcmd5", srcmd5.to_owned()),
             ("build-log-out", options.build_log_out.clone()),
         ];
-        if let Some(endtime) = &info.prev_endtime_for_commit {
+        if let Some(endtime) = &enabled.prev_endtime_for_commit {
             monitor_args.push(("prev-endtime-for-commit", endtime.to_string()));
         }
         monitor_args.extend_from_slice(&common_args);
@@ -128,9 +129,5 @@ pub fn generate_monitor_pipeline(
         );
     }
 
-    // TODO: check this blocking file write & any others
-    let mut file = tempfile::tempfile().wrap_err("Failed to create temp file")?;
-    serde_yaml::to_writer(&mut file, &jobs).wrap_err("Failed to serialize jobs")?;
-
-    Ok(file)
+    serde_yaml::to_string(&jobs).wrap_err("Failed to serialize jobs")
 }

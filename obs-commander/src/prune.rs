@@ -1,5 +1,4 @@
 use color_eyre::eyre::{Context, Result, ensure};
-use gitlab_runner::outputln;
 use open_build_service_api as obs;
 use tracing::info;
 
@@ -47,7 +46,7 @@ pub async fn prune_branch(
             .wrap_err("Failed to delete package")
     )?;
 
-    outputln!("Deleted package {}/{}.", project, package);
+    info!("Deleted package {}/{}.", project, package);
 
     let packages = retry_request!(
         client
@@ -65,9 +64,9 @@ pub async fn prune_branch(
                 .await
                 .wrap_err("Failed to delete project")
         )?;
-        outputln!("Deleted empty project {}.", project);
+        info!("Deleted empty project {}.", project);
     } else {
-        outputln!("Project has other packages, skipping deletion.");
+        info!("Project has other packages, skipping deletion.");
     }
 
     Ok(())
@@ -78,9 +77,8 @@ mod tests {
     use std::time::SystemTime;
 
     use claims::*;
+    use obs_commander_test_support::*;
     use open_build_service_mock::*;
-
-    use crate::test_support::*;
 
     use super::*;
 

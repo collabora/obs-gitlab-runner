@@ -1,10 +1,9 @@
-use std::{collections::HashMap, fs::File};
+use std::collections::HashMap;
 
 use color_eyre::eyre::{Context, Result};
+use obs_commander::build_meta::{CommitBuildInfo, RepoArch};
 use serde::Serialize;
 use tracing::instrument;
-
-use crate::build_meta::{CommitBuildInfo, RepoArch};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PipelineDownloadBinaries {
@@ -61,7 +60,7 @@ pub fn generate_monitor_pipeline(
     srcmd5: &str,
     enabled_repos: &HashMap<RepoArch, CommitBuildInfo>,
     options: GeneratePipelineOptions,
-) -> Result<File> {
+) -> Result<String> {
     let rules: Option<serde_yaml::Sequence> = options
         .rules
         .as_deref()
@@ -128,9 +127,5 @@ pub fn generate_monitor_pipeline(
         );
     }
 
-    // TODO: check this blocking file write & any others
-    let mut file = tempfile::tempfile().wrap_err("Failed to create temp file")?;
-    serde_yaml::to_writer(&mut file, &jobs).wrap_err("Failed to serialize jobs")?;
-
-    Ok(file)
+    serde_yaml::to_string(&jobs).wrap_err("Failed to serialize jobs")
 }

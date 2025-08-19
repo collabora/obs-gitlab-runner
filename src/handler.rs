@@ -123,7 +123,7 @@ struct DownloadBinariesAction {
     package: String,
     #[clap(long)]
     repository: String,
-    #[clap(long)]
+    #[clap(long, required=false)]
     arch: String,
     #[clap(long)]
     build_results_dir: Utf8PathBuf,

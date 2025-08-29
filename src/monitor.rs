@@ -3,15 +3,17 @@ use std::time::Duration;
 use color_eyre::eyre::{Context, Report, Result, ensure, eyre};
 use derivative::*;
 use futures_util::stream::StreamExt;
-use gitlab_runner::outputln;
 use open_build_service_api as obs;
 use tokio::{
     fs::File as AsyncFile,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
 };
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument};
 
-use crate::retry_request;
+use crate::{
+    artifacts::{ArtifactDirectory, AsyncFileReopen},
+    retry_request,
+};
 
 #[derive(Debug)]
 pub enum PackageCompletion {
@@ -193,7 +195,7 @@ impl ObsMonitor {
             .push(&self.package.repository)
             .push(&self.package.arch);
 
-        outputln!("Live build log: {}", log_url);
+        info!("Live build log: {}", log_url);
 
         let mut previous_code = None;
         let mut old_status_retries = 0;
@@ -205,9 +207,9 @@ impl ObsMonitor {
                 PackageBuildState::Building(code) => {
                     if previous_code != Some(code) {
                         if previous_code.is_some() {
-                            outputln!("Build status is now '{}'...", code);
+                            info!("Build status is now '{}'...", code);
                         } else {
-                            outputln!("Monitoring build, current status is '{}'...", code);
+                            info!("Monitoring build, current status is '{}'...", code);
                         }
                         previous_code = Some(code);
                     }
@@ -221,7 +223,7 @@ impl ObsMonitor {
                     );
 
                     if old_status_retries == 0 {
-                        outputln!("Waiting for build status to be available...");
+                        info!("Waiting for build status to be available...");
                     }
                     old_status_retries += 1;
 
@@ -240,36 +242,41 @@ impl ObsMonitor {
         }
     }
 
-    #[instrument]
-    pub async fn download_build_log(&self) -> Result<LogFile> {
+    #[instrument(skip(artifacts))]
+    pub async fn download_build_log(
+        &self,
+        filename: &str,
+        artifacts: &mut impl ArtifactDirectory,
+    ) -> Result<LogFile> {
         const LOG_LEN_TO_CHECK_FOR_MD5: u64 = 2500;
 
-        let mut file = retry_request!({
-            let mut file = AsyncFile::from_std(
-                tempfile::tempfile().wrap_err("Failed to create tempfile to build log")?,
-            );
-            let mut stream = self
-                .client
-                .project(self.package.project.clone())
-                .package(self.package.package.clone())
-                .log(&self.package.repository, &self.package.arch)
-                .stream(obs::PackageLogStreamOptions::default())?;
+        let (mut file, len) = artifacts
+            .save_with(filename, async |mut file| {
+                let len = retry_request!({
+                    file.rewind().await.wrap_err("Failed to rewind build log")?;
 
-            while let Some(bytes) = stream.next().await {
-                let bytes = bytes?;
-                file.write_all(&bytes)
-                    .await
-                    .wrap_err("Failed to download build log")?;
-            }
+                    let mut stream = self
+                        .client
+                        .project(self.package.project.clone())
+                        .package(self.package.package.clone())
+                        .log(&self.package.repository, &self.package.arch)
+                        .stream(obs::PackageLogStreamOptions::default())?;
 
-            Ok::<AsyncFile, Report>(file)
-        })?;
+                    let mut len = 0u64;
+                    while let Some(bytes) = stream.next().await {
+                        let bytes = bytes?;
+                        file.write_all(&bytes)
+                            .await
+                            .wrap_err("Failed to download build log")?;
+                        len += bytes.len() as u64;
+                    }
 
-        let len = file
-            .stream_position()
-            .await
-            .wrap_err("Failed to find stream position")?;
-        file.rewind().await.wrap_err("Failed to rewind file")?;
+                    Ok::<_, Report>(len)
+                })?;
+
+                Ok::<_, Report>((file.reopen().await?, len))
+            })
+            .await?;
 
         let mut buf = vec![0; std::cmp::min(LOG_LEN_TO_CHECK_FOR_MD5, len) as usize];
         file.read_exact(&mut buf)
@@ -290,7 +297,7 @@ mod tests {
     use obs::PackageCode;
     use open_build_service_mock::*;
 
-    use crate::test_support::*;
+    use crate::{artifacts::test_support::MockArtifactDirectory, test_support::*};
 
     use super::*;
 
@@ -369,6 +376,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_download_log() {
+        const LOG_FILENAME: &str = "build.log";
+
         let srcmd5 = random_md5();
         let log_content = format!(
             "srcmd5 '{srcmd5}'\n
@@ -412,6 +421,8 @@ mod tests {
         );
 
         let client = create_default_client(&mock);
+        let mut artifacts = MockArtifactDirectory::default();
+
         let monitor = ObsMonitor::new(
             client,
             MonitoredPackage {
@@ -425,11 +436,18 @@ mod tests {
             },
         );
 
-        let mut log_file = assert_ok!(monitor.download_build_log().await);
+        let mut log_file = assert_ok!(
+            monitor
+                .download_build_log(LOG_FILENAME, &mut artifacts)
+                .await
+        );
         assert_eq!(log_file.len, log_content.len() as u64);
 
         let mut log = "".to_owned();
         assert_ok!(log_file.file.read_to_string(&mut log).await);
+        assert_eq!(log, log_content);
+
+        let log = assert_ok!(artifacts.read_string(LOG_FILENAME).await);
         assert_eq!(log, log_content);
 
         let new_srcmd5 = random_md5();
@@ -444,7 +462,11 @@ mod tests {
             true,
         );
 
-        let err = assert_err!(monitor.download_build_log().await);
+        let err = assert_err!(
+            monitor
+                .download_build_log(LOG_FILENAME, &mut artifacts)
+                .await
+        );
         assert!(err.to_string().contains("unavailable"));
     }
 

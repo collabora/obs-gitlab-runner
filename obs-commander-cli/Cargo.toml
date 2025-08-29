@@ -1,0 +1,36 @@
+[package]
+name = "obs-commander-cli"
+version = "0.1.8"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[[bin]]
+name = "obs-commander"
+path = "src/main.rs"
+
+[dependencies]
+async-trait.workspace = true
+camino.workspace = true
+clap.workspace = true
+color-eyre.workspace = true
+obs-commander = { path = "../obs-commander" }
+obs-commander-test-support = { path = "../obs-commander-test-support" }
+open-build-service-api.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-error = "0.2"
+tracing-subscriber = { version = "0.3", features = ["default", "json"] }
+url = "2.5"
+
+[dev-dependencies]
+claims.workspace = true
+gitlab-runner-mock = "0.2.1"
+obs-commander-tests = { path = "../obs-commander-tests" }
+open-build-service-mock.workspace = true
+rstest.workspace = true
+tokio-stream = { version = "0.1.17", features = ["io-util"] }

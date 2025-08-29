@@ -1,78 +1,44 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
-    fs::File,
-    io::SeekFrom,
+    future::Future,
+    io::Seek,
 };
 
 use async_trait::async_trait;
-use camino::Utf8PathBuf;
-use clap::{ArgAction, Parser, Subcommand};
-use color_eyre::eyre::{Context, Result, eyre};
+use camino::{Utf8Path, Utf8PathBuf};
+use clap::{Parser, Subcommand};
+use color_eyre::eyre::{Context, Report, Result, eyre};
 use derivative::*;
 use futures_util::StreamExt;
 use gitlab_runner::{
     JobHandler, JobResult, Phase, UploadableFile,
     job::{Dependency, Job, Variable},
-    outputln,
+};
+use obs_commander::{
+    actions::{
+        Actions, DEFAULT_BUILD_INFO, DEFAULT_BUILD_LOG, DownloadBinariesAction, DputAction,
+        FailedBuild, FlagSupportingExplicitValue, LOG_TAIL_2MB, MonitorAction, ObsBuildInfo,
+        PruneAction,
+    },
+    artifacts::{ArtifactDirectory, AsyncFileReopen, MissingArtifact, ScopedCell, async_tempfile},
+    monitor::PackageMonitoringOptions,
 };
 use open_build_service_api as obs;
-use serde::{Deserialize, Serialize};
-use tokio::{fs::File as AsyncFile, io::AsyncSeekExt};
+use tokio::{fs::File as AsyncFile, io::AsyncWriteExt};
 use tokio_util::{
     compat::{Compat, TokioAsyncReadCompatExt},
     io::ReaderStream,
 };
-use tracing::{debug, error, instrument, warn};
+use tracing::{error, info, instrument, warn};
 
-use crate::{
-    artifacts::{ArtifactDirectory, save_to_tempfile},
-    binaries::download_binaries,
-    build_meta::{
-        BuildHistoryRetrieval, BuildMeta, BuildMetaOptions, CommitBuildInfo, DisabledRepos,
-        RepoArch,
-    },
-    monitor::{MonitoredPackage, ObsMonitor, PackageCompletion, PackageMonitoringOptions},
-    pipeline::{GeneratePipelineOptions, PipelineDownloadBinaries, generate_monitor_pipeline},
-    prune::prune_branch,
-    retry_request,
-    upload::ObsDscUploader,
+use crate::pipeline::{
+    GeneratePipelineOptions, PipelineDownloadBinaries, generate_monitor_pipeline,
 };
 
-const DEFAULT_BUILD_INFO: &str = "build-info.yml";
 const DEFAULT_MONITOR_PIPELINE: &str = "obs.yml";
 const DEFAULT_PIPELINE_JOB_PREFIX: &str = "obs";
 const DEFAULT_ARTIFACT_EXPIRATION: &str = "3 days";
-const DEFAULT_BUILD_LOG: &str = "build.log";
-
-// Our flags can all take explicit values, because it makes it easier to
-// conditionally set things in the pipelines.
-trait FlagSupportingExplicitValue {
-    fn flag_supporting_explicit_value(self) -> Self;
-}
-
-impl FlagSupportingExplicitValue for clap::Arg {
-    fn flag_supporting_explicit_value(self) -> Self {
-        self.num_args(0..=1)
-            .require_equals(true)
-            .required(false)
-            .default_value("false")
-            .default_missing_value("true")
-            .action(ArgAction::Set)
-    }
-}
-
-#[derive(Parser, Debug)]
-struct DputAction {
-    project: String,
-    dsc: String,
-    #[clap(long, default_value = "")]
-    branch_to: String,
-    #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned())]
-    build_info_out: String,
-    #[clap(long, flag_supporting_explicit_value())]
-    rebuild_if_unchanged: bool,
-}
 
 #[derive(Parser, Debug)]
 struct GenerateMonitorAction {
@@ -96,51 +62,6 @@ struct GenerateMonitorAction {
 }
 
 #[derive(Parser, Debug)]
-struct MonitorAction {
-    #[clap(long)]
-    project: String,
-    #[clap(long)]
-    package: String,
-    #[clap(long)]
-    rev: String,
-    #[clap(long)]
-    srcmd5: String,
-    #[clap(long)]
-    repository: String,
-    #[clap(long)]
-    arch: String,
-    #[clap(long)]
-    prev_endtime_for_commit: Option<u64>,
-    #[clap(long)]
-    build_log_out: String,
-}
-
-#[derive(Parser, Debug)]
-struct DownloadBinariesAction {
-    #[clap(long)]
-    project: String,
-    #[clap(long)]
-    package: String,
-    #[clap(long)]
-    repository: String,
-    #[clap(long)]
-    arch: String,
-    #[clap(long)]
-    build_results_dir: Utf8PathBuf,
-}
-
-#[derive(Parser, Debug)]
-struct PruneAction {
-    #[clap(long, default_value_t = DEFAULT_BUILD_INFO.to_owned())]
-    build_info: String,
-    #[clap(long, flag_supporting_explicit_value())]
-    ignore_missing_build_info: bool,
-    #[clap(long, flag_supporting_explicit_value())]
-    only_if_job_unsuccessful: bool,
-}
-
-#[cfg(test)]
-#[derive(Parser, Debug)]
 struct EchoAction {
     args: Vec<String>,
     #[clap(long, flag_supporting_explicit_value())]
@@ -152,12 +73,23 @@ struct EchoAction {
 }
 
 #[derive(Subcommand)]
-enum Action {
+enum CommonAction {
     Dput(DputAction),
-    GenerateMonitor(GenerateMonitorAction),
     Monitor(MonitorAction),
     DownloadBinaries(DownloadBinariesAction),
-    Prune(PruneAction),
+    Prune {
+        #[clap(long, flag_supporting_explicit_value())]
+        only_if_job_unsuccessful: bool,
+        #[clap(flatten)]
+        args: PruneAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum JobAction {
+    #[clap(flatten)]
+    Common(CommonAction),
+    GenerateMonitor(GenerateMonitorAction),
     #[cfg(test)]
     Echo(EchoAction),
 }
@@ -167,40 +99,8 @@ enum Action {
 #[clap(no_binary_name = true)]
 struct Command {
     #[clap(subcommand)]
-    action: Action,
+    action: JobAction,
 }
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct ObsBuildInfo {
-    project: String,
-    package: String,
-    rev: Option<String>,
-    srcmd5: Option<String>,
-    is_branched: bool,
-    enabled_repos: HashMap<RepoArch, CommitBuildInfo>,
-}
-
-impl ObsBuildInfo {
-    #[instrument]
-    fn save(&self) -> Result<File> {
-        let mut file = tempfile::tempfile().wrap_err("Failed to create build info file")?;
-        serde_yaml::to_writer(&mut file, self).wrap_err("Failed to write build info file")?;
-        Ok(file)
-    }
-}
-
-#[derive(Debug)]
-struct FailedBuild;
-
-impl std::fmt::Display for FailedBuild {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-
-impl std::error::Error for FailedBuild {}
-
-const LOG_TAIL_2MB: u64 = 2 * 1024 * 1024;
 
 fn get_job_variable<'job>(job: &'job Job, key: &str) -> Result<Variable<'job>> {
     job.variable(key)
@@ -216,21 +116,71 @@ pub struct HandlerOptions {
     pub log_tail: u64,
 }
 
+struct GitLabArtifacts<'a> {
+    job: &'a Job,
+    artifacts: &'a mut HashMap<Utf8PathBuf, AsyncFile>,
+}
+
+#[async_trait]
+impl ArtifactDirectory for GitLabArtifacts<'_> {
+    #[instrument(skip(self, path), path = path.as_ref())]
+    async fn open(&self, path: impl AsRef<Utf8Path> + Send) -> Result<AsyncFile> {
+        let path = path.as_ref();
+
+        if let Some(file) = self.artifacts.get(path) {
+            let file = file.reopen().await.wrap_err("Failed to reopen artifact")?;
+            return Ok(file);
+        }
+
+        for dep in self.job.dependencies() {
+            if let Some(file) = check_for_artifact(dep, path).await? {
+                return Ok(file);
+            }
+        }
+
+        Err(MissingArtifact(path.to_owned()).into())
+    }
+
+    #[tracing::instrument(skip(self, path, func), path = path.as_ref())]
+    async fn save_with<
+        Ret: Send,
+        Err: Send,
+        Fut: Future<Output = Result<Ret, Err>> + Send,
+        F: (FnOnce(ScopedCell<AsyncFile>) -> Fut) + Send,
+    >(
+        &mut self,
+        path: impl AsRef<Utf8Path> + Send,
+        func: F,
+    ) -> Result<Ret>
+    where
+        Report: From<Err>,
+    {
+        let file = async_tempfile().await?;
+        let (mut file, ret) = ScopedCell::run(file, func).await;
+        let ret = ret?;
+
+        file.flush().await?;
+        self.artifacts
+            .insert(path.as_ref().to_owned(), file.reopen().await?);
+        Ok(ret)
+    }
+}
+
 pub struct ObsJobHandler {
     job: Job,
-    client: obs::Client,
     options: HandlerOptions,
 
+    actions: Actions,
     script_failed: bool,
-    artifacts: HashMap<String, AsyncFile>,
+    artifacts: HashMap<Utf8PathBuf, AsyncFile>,
 }
 
 impl ObsJobHandler {
     pub fn new(job: Job, client: obs::Client, options: HandlerOptions) -> Self {
         ObsJobHandler {
             job,
-            client,
             options,
+            actions: Actions { client },
             script_failed: false,
             artifacts: HashMap::new(),
         }
@@ -276,132 +226,17 @@ impl ObsJobHandler {
     }
 
     #[instrument(skip(self))]
-    async fn run_dput(&mut self, args: DputAction) -> Result<()> {
-        let branch_to = if !args.branch_to.is_empty() {
-            Some(args.branch_to)
-        } else {
-            None
-        };
-        let is_branched = branch_to.is_some();
-
-        // The upload prep and actual upload are split in two so that we can
-        // already tell what the project & package name are, so build-info.yaml
-        // can be written and pruning can take place regardless of the actual
-        // *upload* success.
-        let uploader = ObsDscUploader::prepare(
-            self.client.clone(),
-            args.project.clone(),
-            branch_to,
-            args.dsc.as_str().into(),
-            self,
-        )
-        .await?;
-
-        let build_info = ObsBuildInfo {
-            project: uploader.project().to_owned(),
-            package: uploader.package().to_owned(),
-            rev: None,
-            srcmd5: None,
-            is_branched,
-            enabled_repos: HashMap::new(),
-        };
-        debug!("Saving initial build info: {:?}", build_info);
-
-        let build_info_2 = build_info.clone();
-        let build_info_file = tokio::task::spawn_blocking(move || build_info_2.save()).await??;
-
-        self.artifacts.insert(
-            args.build_info_out.clone(),
-            AsyncFile::from_std(build_info_file),
-        );
-
-        let initial_build_meta = BuildMeta::get_if_package_exists(
-            self.client.clone(),
-            build_info.project.clone(),
-            build_info.package.clone(),
-            &BuildMetaOptions {
-                history_retrieval: BuildHistoryRetrieval::Full,
-                // Getting disabled repos has to happen *after* the upload,
-                // since the new version can change the supported architectures.
-                disabled_repos: DisabledRepos::Keep,
-            },
-        )
-        .await?;
-        debug!(?initial_build_meta);
-
-        let result = uploader.upload_package(self).await?;
-
-        // If we couldn't get the metadata before because the package didn't
-        // exist yet, get it now but without history, so we leave the previous
-        // endtime empty (if there was no previous package, there were no
-        // previous builds).
-        let mut build_meta = if let Some(mut build_meta) = initial_build_meta {
-            build_meta
-                .remove_disabled_repos(&Default::default())
-                .await?;
-            build_meta
-        } else {
-            BuildMeta::get(
-                self.client.clone(),
-                build_info.project.clone(),
-                build_info.package.clone(),
-                &BuildMetaOptions {
-                    history_retrieval: BuildHistoryRetrieval::None,
-                    disabled_repos: DisabledRepos::Skip {
-                        wait_options: Default::default(),
-                    },
-                },
-            )
-            .await?
+    async fn generate_monitor(&mut self, args: GenerateMonitorAction) -> Result<()> {
+        let mut artifacts = GitLabArtifacts {
+            job: &self.job,
+            artifacts: &mut self.artifacts,
         };
 
-        if result.unchanged {
-            outputln!("Package unchanged at revision {}.", result.rev);
-
-            if args.rebuild_if_unchanged {
-                retry_request!(
-                    self.client
-                        .project(build_info.project.clone())
-                        .package(build_info.package.clone())
-                        .rebuild()
-                        .await
-                        .wrap_err("Failed to trigger rebuild")
-                )?;
-            } else {
-                // Clear out the history used to track endtime values. This is
-                // normally important to make sure the monitor doesn't
-                // accidentally pick up an old build result...but if we didn't
-                // rebuild anything, picking up the old result is *exactly* the
-                // behavior we want.
-                build_meta.clear_stored_history();
-            }
-        } else {
-            outputln!("Package uploaded with revision {}.", result.rev);
-        }
-
-        let enabled_repos = build_meta.get_commit_build_info(&result.build_srcmd5);
-        let build_info = ObsBuildInfo {
-            rev: Some(result.rev),
-            srcmd5: Some(result.build_srcmd5),
-            enabled_repos,
-            ..build_info
-        };
-        debug!("Saving complete build info: {:?}", build_info);
-
-        let build_info_file = tokio::task::spawn_blocking(move || build_info.save()).await??;
-        self.artifacts
-            .insert(args.build_info_out, AsyncFile::from_std(build_info_file));
-
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    async fn run_generate_monitor(&mut self, args: GenerateMonitorAction) -> Result<()> {
-        let build_info_data = self.get_data(&args.build_info).await?;
-        let build_info: ObsBuildInfo = serde_yaml::from_slice(&build_info_data[..])
+        let build_info_data = artifacts.read_string(&args.build_info).await?;
+        let build_info: ObsBuildInfo = serde_yaml::from_str(&build_info_data)
             .wrap_err("Failed to parse provided build info file")?;
 
-        let file = generate_monitor_pipeline(
+        let pipeline = generate_monitor_pipeline(
             &build_info.project,
             &build_info.package,
             &build_info
@@ -429,170 +264,69 @@ impl ObsJobHandler {
                 build_log_out: args.build_log_out.to_string(),
             },
         )?;
-        self.artifacts
-            .insert(args.pipeline_out.clone(), AsyncFile::from_std(file));
 
-        outputln!("Wrote pipeline file '{}'.", args.pipeline_out);
-
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    async fn run_monitor(&mut self, args: MonitorAction) -> Result<()> {
-        let monitor = ObsMonitor::new(
-            self.client.clone(),
-            MonitoredPackage {
-                project: args.project.clone(),
-                package: args.package.clone(),
-                repository: args.repository.clone(),
-                arch: args.arch.clone(),
-                rev: args.rev.clone(),
-                srcmd5: args.srcmd5.clone(),
-                prev_endtime_for_commit: args.prev_endtime_for_commit,
-            },
-        );
-
-        let completion = monitor
-            .monitor_package(self.options.monitor.clone())
+        artifacts
+            .write(&args.pipeline_out, pipeline.as_bytes())
             .await?;
-        debug!("Completed with: {:?}", completion);
-
-        let mut log_file = monitor.download_build_log().await?;
-        self.artifacts.insert(
-            args.build_log_out.clone(),
-            log_file
-                .file
-                .try_clone()
-                .await
-                .wrap_err("Failed to clone log file")?,
-        );
-
-        match completion {
-            PackageCompletion::Succeeded => {
-                outputln!("Build succeeded!");
-            }
-            PackageCompletion::Superceded => {
-                outputln!("Build was superceded by a newer revision.");
-            }
-            PackageCompletion::Disabled => {
-                outputln!("Package is disabled for this architecture.");
-            }
-            PackageCompletion::Failed(reason) => {
-                log_file
-                    .file
-                    .seek(SeekFrom::End(
-                        -(std::cmp::min(self.options.log_tail, log_file.len) as i64),
-                    ))
-                    .await
-                    .wrap_err("Failed to find length of log file")?;
-
-                let mut log_stream = ReaderStream::new(log_file.file);
-                while let Some(bytes) = log_stream.next().await {
-                    let bytes = bytes.wrap_err("Failed to stream log bytes")?;
-                    self.job.trace(String::from_utf8_lossy(&bytes).as_ref());
-                }
-
-                outputln!("{}", "=".repeat(64));
-                outputln!(
-                    "Build failed with reason '{}'.",
-                    reason.to_string().to_lowercase()
-                );
-                outputln!("The last 2MB of the build log is printed above.");
-                outputln!(
-                    "(Full logs are available in the build artifact '{}'.)",
-                    args.build_log_out
-                );
-                return Err(FailedBuild.into());
-            }
-        }
+        info!("Wrote pipeline file '{}'.", args.pipeline_out);
 
         Ok(())
     }
 
-    #[instrument(skip(self))]
-    async fn run_download_binaries(&mut self, args: DownloadBinariesAction) -> Result<()> {
-        let binaries = download_binaries(
-            self.client.clone(),
-            &args.project,
-            &args.package,
-            &args.repository,
-            &args.arch,
-        )
-        .await?;
-        let binary_count = binaries.len();
-
-        self.artifacts.extend(
-            binaries
-                .into_iter()
-                .map(|(path, file)| (args.build_results_dir.join(path).to_string(), file)),
-        );
-
-        outputln!("Downloaded {} artifact(s).", binary_count);
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    async fn run_prune(&mut self, args: PruneAction) -> Result<()> {
-        if args.only_if_job_unsuccessful && !self.script_failed {
-            outputln!("Skipping prune: main script was successful.");
-            return Ok(());
-        }
-
-        let build_info_data = if args.ignore_missing_build_info {
-            if let Some(build_info_data) = self.get_data_or_none(&args.build_info).await? {
-                build_info_data
-            } else {
-                outputln!(
-                    "Skipping prune: build info file '{}' not found.",
-                    args.build_info
-                );
-                return Ok(());
-            }
-        } else {
-            self.get_data(&args.build_info).await?
-        };
-
-        let build_info: ObsBuildInfo = serde_yaml::from_slice(&build_info_data[..])
-            .wrap_err("Failed to parse provided build info file")?;
-
-        if build_info.is_branched {
-            outputln!(
-                "Pruning branched package {}/{}...",
-                build_info.project,
-                build_info.package
-            );
-            prune_branch(
-                &self.client,
-                &build_info.project,
-                &build_info.package,
-                build_info.rev.as_deref(),
-            )
-            .await?;
-        } else {
-            outputln!("Skipping prune: package was not branched.");
-        }
-
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(obs_gitlab_runner.forward = true))]
     async fn command(&mut self, cmdline: &str) -> Result<()> {
         // TODO: inject user?
         let cmdline = self.expand_vars(cmdline, true, &mut HashSet::new());
 
-        outputln!("> {}", cmdline);
+        info!("> {}", cmdline);
 
         let args = shell_words::split(&cmdline).wrap_err("Invalid command line")?;
         let command = Command::try_parse_from(args)?;
 
         match command.action {
-            Action::Dput(args) => self.run_dput(args).await?,
-            Action::GenerateMonitor(args) => self.run_generate_monitor(args).await?,
-            Action::Monitor(args) => self.run_monitor(args).await?,
-            Action::DownloadBinaries(args) => self.run_download_binaries(args).await?,
-            Action::Prune(args) => self.run_prune(args).await?,
+            JobAction::Common(action) => {
+                let mut artifacts = GitLabArtifacts {
+                    job: &self.job,
+                    artifacts: &mut self.artifacts,
+                };
+
+                match action {
+                    CommonAction::Dput(args) => self.actions.dput(args, &mut artifacts).await?,
+                    CommonAction::Monitor(args) => {
+                        self.actions
+                            .monitor(
+                                args,
+                                self.options.monitor.clone(),
+                                async |file| {
+                                    let mut log_stream = ReaderStream::new(file);
+                                    while let Some(bytes) = log_stream.next().await {
+                                        let bytes = bytes.wrap_err("Failed to stream log bytes")?;
+                                        self.job.trace(String::from_utf8_lossy(&bytes).as_ref());
+                                    }
+                                    Ok(())
+                                },
+                                self.options.log_tail,
+                                &mut artifacts,
+                            )
+                            .await?
+                    }
+                    CommonAction::DownloadBinaries(args) => {
+                        self.actions.download_binaries(args, &mut artifacts).await?
+                    }
+                    CommonAction::Prune {
+                        only_if_job_unsuccessful: true,
+                        ..
+                    } if !self.script_failed => {
+                        info!("Skipping prune: main script was successful.")
+                    }
+                    CommonAction::Prune { args, .. } => {
+                        self.actions.prune(args, &artifacts).await?
+                    }
+                }
+            }
+            JobAction::GenerateMonitor(args) => self.generate_monitor(args).await?,
             #[cfg(test)]
-            Action::Echo(args) => {
+            JobAction::Echo(args) => {
                 use color_eyre::eyre::ensure;
 
                 let mut output = args.args.join(&args.sep);
@@ -600,7 +334,7 @@ impl ObsJobHandler {
                     output = output.to_uppercase();
                 }
 
-                outputln!("{}", output);
+                info!("{}", output);
                 ensure!(!args.fail, "Failed");
             }
         }
@@ -610,7 +344,7 @@ impl ObsJobHandler {
 }
 
 pub struct UploadableArtifact {
-    path: String,
+    path: Utf8PathBuf,
     file: AsyncFile,
 }
 
@@ -619,12 +353,12 @@ impl UploadableFile for UploadableArtifact {
     type Data<'a> = Compat<AsyncFile>;
 
     fn get_path(&self) -> Cow<'_, str> {
-        Cow::Borrowed(&self.path)
+        Cow::Borrowed(self.path.as_str())
     }
 
     async fn get_data(&self) -> Result<Self::Data<'_>, ()> {
         self.file
-            .try_clone()
+            .reopen()
             .await
             .map(TokioAsyncReadCompatExt::compat)
             .map_err(|e| {
@@ -657,12 +391,7 @@ impl JobHandler<UploadableArtifact> for ObsJobHandler {
     ) -> Result<Box<dyn Iterator<Item = UploadableArtifact> + Send>, ()> {
         let mut files = vec![];
         for (path, file) in &mut self.artifacts {
-            match async {
-                file.rewind().await?;
-                file.try_clone().await
-            }
-            .await
-            {
+            match file.try_clone().await {
                 Ok(file) => files.push(UploadableArtifact {
                     path: path.clone(),
                     file,
@@ -679,17 +408,23 @@ impl JobHandler<UploadableArtifact> for ObsJobHandler {
 }
 
 #[instrument(skip(dep), fields(dep_id = dep.id(), dep_name = dep.name()))]
-async fn check_for_artifact(dep: Dependency<'_>, filename: &str) -> Result<Option<AsyncFile>> {
-    // Needed because anything captured by spawn_blocking must have a 'static
-    // lifetime.
-    let filename = filename.to_owned();
+async fn check_for_artifact(dep: Dependency<'_>, path: &Utf8Path) -> Result<Option<AsyncFile>> {
+    // This needs to be an owned type, because captured by spawn_blocking must
+    // have a 'static lifetime, so we also take the opportunity to normalize the
+    // path from extra trailing slashes and similar.
+    let path = path.components().collect::<Utf8PathBuf>();
 
     // TODO: not spawn a sync environment for *every single artifact*
     if let Some(mut artifact) = dep.download().await? {
         if let Some(file) = tokio::task::spawn_blocking(move || {
             artifact
-                .file(&filename)
-                .map(|mut file| save_to_tempfile(&mut file))
+                .file(path.as_str())
+                .map(|mut file| {
+                    let mut temp = tempfile::tempfile()?;
+                    std::io::copy(&mut file, &mut temp)?;
+                    temp.rewind()?;
+                    Ok::<_, Report>(temp)
+                })
                 .transpose()
         })
         .await??
@@ -699,39 +434,6 @@ async fn check_for_artifact(dep: Dependency<'_>, filename: &str) -> Result<Optio
     }
 
     Ok(None)
-}
-
-#[async_trait]
-impl ArtifactDirectory for ObsJobHandler {
-    type Reader = File;
-
-    #[instrument(skip(self))]
-    async fn get_file_or_none(&self, filename: &str) -> Result<Option<AsyncFile>> {
-        if let Some(file) = self.artifacts.get(filename) {
-            let mut file = file
-                .try_clone()
-                .await
-                .wrap_err("Failed to clone artifact")?;
-            file.rewind().await.wrap_err("Failed to rewind artifact")?;
-            return Ok(Some(file));
-        }
-
-        for dep in self.job.dependencies() {
-            if let Some(file) = check_for_artifact(dep, filename).await? {
-                return Ok(Some(file));
-            }
-        }
-
-        Ok(None)
-    }
-
-    #[instrument(skip(self))]
-    async fn get_or_none(&self, filename: &str) -> Result<Option<Self::Reader>> {
-        Ok(self
-            .get_file_or_none(filename)
-            .await?
-            .map(|f| f.try_into_std().unwrap()))
-    }
 }
 
 #[cfg(test)]
@@ -747,6 +449,8 @@ mod tests {
     use claims::*;
     use gitlab_runner::{GitlabLayer, Runner, RunnerBuilder};
     use gitlab_runner_mock::*;
+    use obs_commander::{build_meta::RepoArch, upload::compute_md5};
+    use obs_commander_test_support::*;
     use open_build_service_mock::*;
     use rstest::rstest;
     use tempfile::TempDir;
@@ -754,7 +458,7 @@ mod tests {
     use tracing_subscriber::{Layer, Registry, filter::Targets, prelude::*};
     use zip::ZipArchive;
 
-    use crate::{test_support::*, upload::compute_md5};
+    use crate::logging::GitLabForwarder;
 
     use super::*;
 
@@ -822,7 +526,7 @@ mod tests {
                             ),
                     )
                     .with(tracing_error::ErrorLayer::default())
-                    .with(layer),
+                    .with(GitLabForwarder::new(layer)),
             )
             .await
     }
@@ -1869,6 +1573,8 @@ mod tests {
         )]
         test: Option<GenerateMonitorTimeoutLocation>,
     ) {
+        use obs_commander::build_meta::CommitBuildInfo;
+
         const TEST_MONITOR_TIMEOUT: &str = "10 minutes";
 
         with_context(async |mut context| {

@@ -51,7 +51,7 @@ jobs:
         with:
           toolchain: "1.88"
           components: clippy
-      - uses: clechasseur/rs-clippy-check@v4.0.5
+      - uses: clechasseur/rs-clippy-check@v5.0.1
         with:
           # setup-rust-toolchain already sets `-D warnings`, but we leave this
           # here to make the behavior explicit.
@@ -69,7 +69,7 @@ jobs:
           components: clippy
           # Defaults to '-D warnings', so clear it out manually.
           rustflags: ''
-      - uses: clechasseur/rs-clippy-check@v4.0.5
+      - uses: clechasseur/rs-clippy-check@v5.0.1
         with:
           args: --all-targets --all-features
 

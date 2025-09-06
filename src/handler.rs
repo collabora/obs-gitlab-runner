@@ -1,7 +1,6 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
-    future::Future,
     io::{Seek, SeekFrom},
 };
 
@@ -30,8 +29,7 @@ use tracing::{debug, error, instrument, warn};
 
 use crate::{
     artifacts::{
-        ArtifactDirectory, AsyncFileReopen, MissingArtifact, MissingArtifactToNone, ScopedCell,
-        async_tempfile,
+        ArtifactDirectory, AsyncFileReopen, MissingArtifact, MissingArtifactToNone, async_tempfile,
     },
     binaries::download_binaries,
     build_meta::{
@@ -190,7 +188,7 @@ impl ObsBuildInfo {
     #[instrument(skip(artifacts))]
     async fn save(self, artifacts: &mut impl ArtifactDirectory, path: &Utf8Path) -> Result<()> {
         artifacts
-            .save_with(path, async |file| {
+            .save_with(path, async |file: &mut AsyncFile| {
                 let mut file = file.try_clone().await?.into_std().await;
                 tokio::task::spawn_blocking(move || {
                     serde_yaml::to_writer(&mut file, &self)
@@ -719,22 +717,16 @@ impl ArtifactDirectory for ObsJobHandler {
     }
 
     #[tracing::instrument(skip(self, path, func), path = path.as_ref())]
-    async fn save_with<
-        Ret: Send,
-        Err: Send,
-        Fut: Future<Output = Result<Ret, Err>> + Send,
-        F: (FnOnce(ScopedCell<AsyncFile>) -> Fut) + Send,
-    >(
-        &mut self,
-        path: impl AsRef<Utf8Path> + Send,
-        func: F,
-    ) -> Result<Ret>
+    async fn save_with<Ret, Err, F, P>(&mut self, path: P, func: F) -> Result<Ret>
     where
         Report: From<Err>,
+        Ret: Send,
+        Err: Send,
+        F: for<'a> crate::artifacts::Callback<'a, Ret, Err> + Send,
+        P: AsRef<Utf8Path> + Send,
     {
-        let file = async_tempfile().await?;
-        let (mut file, ret) = ScopedCell::run(file, func).await;
-        let ret = ret?;
+        let mut file = async_tempfile().await?;
+        let ret = func(&mut file).await?;
 
         file.flush().await?;
         self.artifacts

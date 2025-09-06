@@ -1,9 +1,4 @@
-use std::{
-    future::Future,
-    ops::{Deref, DerefMut},
-    os::fd::AsRawFd,
-    sync::{Arc, OnceLock},
-};
+use std::{future::Future, os::fd::AsRawFd};
 
 use async_trait::async_trait;
 use camino::{Utf8Path, Utf8PathBuf};
@@ -64,54 +59,16 @@ impl AsyncFileReopen for AsyncFile {
     }
 }
 
-// This is a little hack to let us pass some thing to an async callback such that:
-// - We can get the value back when the callback completes.
-// - ...without having to use references (because async callback lifetimes are
-//   really messy).
-// In particular, it's needed for save_with implementations to be able to flush
-// the file at the very end while still giving it to the callback.
-pub struct ScopedCell<T> {
-    value: Option<T>,
-    once: Arc<OnceLock<T>>,
+pub trait Callback<'a, T, E>: FnOnce(&'a mut AsyncFile) -> Self::Fut + Send {
+    type Fut: Future<Output = Result<T, E>> + Send;
 }
 
-impl<T> ScopedCell<T> {
-    pub async fn run<Ret, Fut: Future<Output = Ret> + Send, F: (FnOnce(Self) -> Fut) + Send>(
-        value: T,
-        func: F,
-    ) -> (T, Ret) {
-        let mut once = Arc::new(OnceLock::new());
-
-        let ret = func(Self {
-            value: Some(value),
-            once: once.clone(),
-        })
-        .await;
-        let value = Arc::get_mut(&mut once)
-            .and_then(|once| once.take())
-            .expect("ScopedCell leaked");
-        (value, ret)
-    }
-}
-
-impl<T> Drop for ScopedCell<T> {
-    fn drop(&mut self) {
-        _ = self.once.set(self.value.take().unwrap());
-    }
-}
-
-impl<T> Deref for ScopedCell<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        self.value.as_ref().unwrap()
-    }
-}
-
-impl<T> DerefMut for ScopedCell<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.value.as_mut().unwrap()
-    }
+impl<'a, T, E, Out, F> Callback<'a, T, E> for F
+where
+    Out: Future<Output = Result<T, E>> + Send,
+    F: FnOnce(&'a mut AsyncFile) -> Out + Send,
+{
+    type Fut = Out;
 }
 
 #[async_trait]
@@ -132,22 +89,19 @@ pub trait ArtifactDirectory: Send + Sync {
             .and_then(|data| String::from_utf8(data).map_err(|e| e.into()))
     }
 
-    async fn save_with<
+    async fn save_with<Ret, Err, F, P>(&mut self, path: P, func: F) -> Result<Ret>
+    where
+        Report: From<Err>,
         Ret: Send,
         Err: Send,
-        Fut: Future<Output = Result<Ret, Err>> + Send,
-        F: (FnOnce(ScopedCell<AsyncFile>) -> Fut) + Send,
-    >(
-        &mut self,
-        path: impl AsRef<Utf8Path> + Send,
-        func: F,
-    ) -> Result<Ret>
-    where
-        Report: From<Err>;
+        F: for<'a> Callback<'a, Ret, Err> + Send,
+        P: AsRef<Utf8Path> + Send;
 
     async fn write(&mut self, path: impl AsRef<Utf8Path> + Send, data: &[u8]) -> Result<()> {
-        self.save_with(path, async |mut file| file.write_all(data).await)
-            .await?;
+        self.save_with(path, async |file: &mut AsyncFile| {
+            file.write_all(data).await
+        })
+        .await?;
         Ok(())
     }
 }
@@ -177,22 +131,16 @@ pub mod test_support {
             file.reopen().await
         }
 
-        async fn save_with<
-            Ret: Send,
-            Err: Send,
-            Fut: Future<Output = Result<Ret, Err>> + Send,
-            F: (FnOnce(ScopedCell<AsyncFile>) -> Fut) + Send,
-        >(
-            &mut self,
-            path: impl AsRef<Utf8Path> + Send,
-            func: F,
-        ) -> Result<Ret>
+        async fn save_with<Ret, Err, F, P>(&mut self, path: P, func: F) -> Result<Ret>
         where
             Report: From<Err>,
+            Ret: Send,
+            Err: Send,
+            F: for<'a> Callback<'a, Ret, Err> + Send,
+            P: AsRef<Utf8Path> + Send,
         {
-            let file = async_tempfile().await?;
-            let (mut file, ret) = ScopedCell::run(file, func).await;
-            let ret = ret?;
+            let mut file = async_tempfile().await?;
+            let ret = func(&mut file).await?;
 
             file.flush().await?;
             file.rewind().await?;

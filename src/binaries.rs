@@ -40,7 +40,7 @@ pub async fn download_binaries(
         let binary = binary.clone();
         let client = client.clone();
         artifacts
-            .save_with(&dest, async move |mut file| {
+            .save_with(&dest, async move |file: &mut tokio::fs::File| {
                 retry_request!(
                     async {
                         file.rewind().await.wrap_err("Failed to rewind file")?;

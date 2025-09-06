@@ -252,7 +252,7 @@ impl ObsMonitor {
         const LOG_LEN_TO_CHECK_FOR_MD5: u64 = 2500;
 
         let (mut file, len) = artifacts
-            .save_with(filename, async |mut file| {
+            .save_with(filename, async |file: &mut AsyncFile| {
                 let len = retry_request!({
                     file.rewind().await.wrap_err("Failed to rewind build log")?;
 

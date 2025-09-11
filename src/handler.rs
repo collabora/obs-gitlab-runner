@@ -29,7 +29,7 @@ use tracing::{debug, error, instrument, warn};
 
 use crate::{
     artifacts::{
-        ArtifactDirectory, AsyncFileReopen, MissingArtifact, MissingArtifactToNone, async_tempfile,
+        ArtifactDirectory, ArtifactReader, ArtifactWriter, MissingArtifact, MissingArtifactToNone,
     },
     binaries::download_binaries,
     build_meta::{
@@ -188,13 +188,12 @@ impl ObsBuildInfo {
     #[instrument(skip(artifacts))]
     async fn save(self, artifacts: &mut impl ArtifactDirectory, path: &Utf8Path) -> Result<()> {
         artifacts
-            .save_with(path, async |file: &mut AsyncFile| {
-                let mut file = file.try_clone().await?.into_std().await;
-                tokio::task::spawn_blocking(move || {
-                    serde_yaml::to_writer(&mut file, &self)
-                        .wrap_err("Failed to write build info file")
-                })
-                .await??;
+            .save_with(path, async |file: &mut ArtifactWriter| {
+                let data =
+                    serde_yaml::to_string(&self).wrap_err("Failed to serialize build info")?;
+                file.write_all(data.as_bytes())
+                    .await
+                    .wrap_err("Failed to write build info file")?;
                 Ok::<_, Report>(())
             })
             .await
@@ -234,7 +233,7 @@ pub struct ObsJobHandler {
     options: HandlerOptions,
 
     script_failed: bool,
-    artifacts: HashMap<Utf8PathBuf, AsyncFile>,
+    artifacts: HashMap<Utf8PathBuf, ArtifactReader>,
 }
 
 impl ObsJobHandler {
@@ -605,12 +604,12 @@ impl ObsJobHandler {
 
 pub struct UploadableArtifact {
     path: Utf8PathBuf,
-    file: AsyncFile,
+    file: ArtifactReader,
 }
 
 #[async_trait]
 impl UploadableFile for UploadableArtifact {
-    type Data<'a> = Compat<AsyncFile>;
+    type Data<'a> = Compat<ArtifactReader>;
 
     fn get_path(&self) -> Cow<'_, str> {
         Cow::Borrowed(self.path.as_str())
@@ -618,7 +617,7 @@ impl UploadableFile for UploadableArtifact {
 
     async fn get_data(&self) -> Result<Self::Data<'_>, ()> {
         self.file
-            .reopen()
+            .try_clone()
             .await
             .map(TokioAsyncReadCompatExt::compat)
             .map_err(|e| {
@@ -668,7 +667,10 @@ impl JobHandler<UploadableArtifact> for ObsJobHandler {
 }
 
 #[instrument(skip(dep), fields(dep_id = dep.id(), dep_name = dep.name()))]
-async fn check_for_artifact(dep: Dependency<'_>, path: &Utf8Path) -> Result<Option<AsyncFile>> {
+async fn check_for_artifact(
+    dep: Dependency<'_>,
+    path: &Utf8Path,
+) -> Result<Option<ArtifactReader>> {
     // This needs to be an owned type, because captured by spawn_blocking must
     // have a 'static lifetime, so we also take the opportunity to normalize the
     // path from extra trailing slashes and similar.
@@ -689,7 +691,9 @@ async fn check_for_artifact(dep: Dependency<'_>, path: &Utf8Path) -> Result<Opti
         })
         .await??
         {
-            return Ok(Some(AsyncFile::from_std(file)));
+            return Ok(Some(
+                ArtifactReader::from_async_file(&AsyncFile::from_std(file)).await?,
+            ));
         }
     }
 
@@ -699,11 +703,14 @@ async fn check_for_artifact(dep: Dependency<'_>, path: &Utf8Path) -> Result<Opti
 #[async_trait]
 impl ArtifactDirectory for ObsJobHandler {
     #[instrument(skip(self, path), path = path.as_ref())]
-    async fn open(&self, path: impl AsRef<Utf8Path> + Send) -> Result<AsyncFile> {
+    async fn open(&self, path: impl AsRef<Utf8Path> + Send) -> Result<ArtifactReader> {
         let path = path.as_ref();
 
         if let Some(file) = self.artifacts.get(path) {
-            let file = file.reopen().await.wrap_err("Failed to reopen artifact")?;
+            let file = file
+                .try_clone()
+                .await
+                .wrap_err("Failed to reopen artifact")?;
             return Ok(file);
         }
 
@@ -725,12 +732,10 @@ impl ArtifactDirectory for ObsJobHandler {
         F: for<'a> crate::artifacts::Callback<'a, Ret, Err> + Send,
         P: AsRef<Utf8Path> + Send,
     {
-        let mut file = async_tempfile().await?;
-        let ret = func(&mut file).await?;
-
-        file.flush().await?;
+        let mut writer = ArtifactWriter::new().await?;
+        let ret = func(&mut writer).await?;
         self.artifacts
-            .insert(path.as_ref().to_owned(), file.reopen().await?);
+            .insert(path.as_ref().to_owned(), writer.into_reader().await?);
         Ok(ret)
     }
 }

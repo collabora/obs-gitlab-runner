@@ -8,7 +8,6 @@ use futures_util::{Stream, TryStreamExt};
 use gitlab_runner::outputln;
 use md5::{Digest, Md5};
 use open_build_service_api as obs;
-use tokio::io::AsyncSeekExt;
 use tracing::{Instrument, debug, info_span, instrument, trace};
 
 use crate::{artifacts::ArtifactDirectory, dsc::Dsc, retry_request};
@@ -225,11 +224,10 @@ impl ObsDscUploader {
         artifacts: &impl ArtifactDirectory,
     ) -> Result<()> {
         debug!("Uploading file");
-        let file = artifacts.open(root.join(filename).as_str()).await?;
+        let path = root.join(filename);
 
         retry_request!({
-            let mut file = file.try_clone().await?;
-            file.rewind().await?;
+            let file = artifacts.open(&path).await?;
             self.client
                 .project(self.project.clone())
                 .package(self.package.clone())

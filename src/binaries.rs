@@ -8,7 +8,10 @@ use tokio::io::AsyncSeekExt;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{Instrument, info_span, instrument};
 
-use crate::{artifacts::ArtifactDirectory, retry_request};
+use crate::{
+    artifacts::{ArtifactDirectory, ArtifactWriter},
+    retry_request,
+};
 
 pub struct DownloadSummary {
     pub paths: Vec<Utf8PathBuf>,
@@ -40,7 +43,7 @@ pub async fn download_binaries(
         let binary = binary.clone();
         let client = client.clone();
         artifacts
-            .save_with(&dest, async move |file: &mut tokio::fs::File| {
+            .save_with(&dest, async move |file: &mut ArtifactWriter| {
                 retry_request!(
                     async {
                         file.rewind().await.wrap_err("Failed to rewind file")?;

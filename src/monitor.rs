@@ -5,14 +5,11 @@ use derivative::*;
 use futures_util::stream::StreamExt;
 use gitlab_runner::outputln;
 use open_build_service_api as obs;
-use tokio::{
-    fs::File as AsyncFile,
-    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tracing::{debug, instrument};
 
 use crate::{
-    artifacts::{ArtifactDirectory, AsyncFileReopen},
+    artifacts::{ArtifactDirectory, ArtifactReader, ArtifactWriter},
     retry_request,
 };
 
@@ -33,7 +30,7 @@ enum PackageBuildState {
 
 #[derive(Debug)]
 pub struct LogFile {
-    pub file: AsyncFile,
+    pub file: ArtifactReader,
     pub len: u64,
 }
 
@@ -251,11 +248,9 @@ impl ObsMonitor {
     ) -> Result<LogFile> {
         const LOG_LEN_TO_CHECK_FOR_MD5: u64 = 2500;
 
-        let (mut file, len) = artifacts
-            .save_with(filename, async |file: &mut AsyncFile| {
-                let len = retry_request!({
-                    file.rewind().await.wrap_err("Failed to rewind build log")?;
-
+        let (mut file, len) = retry_request!({
+            artifacts
+                .save_with(filename, async |file: &mut ArtifactWriter| {
                     let mut stream = self
                         .client
                         .project(self.package.project.clone())
@@ -272,12 +267,10 @@ impl ObsMonitor {
                         len += bytes.len() as u64;
                     }
 
-                    Ok::<_, Report>(len)
-                })?;
-
-                Ok::<_, Report>((file.reopen().await?, len))
-            })
-            .await?;
+                    Ok::<_, Report>((file.get_reader().await?, len))
+                })
+                .await
+        })?;
 
         let mut buf = vec![0; std::cmp::min(LOG_LEN_TO_CHECK_FOR_MD5, len) as usize];
         file.read_exact(&mut buf)

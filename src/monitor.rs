@@ -334,8 +334,8 @@ mod tests {
         );
 
         assert_ok!(monitor.check_log_md5(&format!("srcmd5 '{srcmd5}'")));
-        assert_err!(monitor.check_log_md5("srcmd5 'xyz123'"));
-        assert_err!(monitor.check_log_md5(&format!("'{srcmd5}'")));
+        let _ = assert_err!(monitor.check_log_md5("srcmd5 'xyz123'"));
+        let _ = assert_err!(monitor.check_log_md5(&format!("'{srcmd5}'")));
 
         mock.branch(
             TEST_PROJECT.to_owned(),
@@ -363,8 +363,8 @@ mod tests {
         );
 
         assert_ok!(monitor.check_log_md5(&format!("srcmd5 '{branch_xsrcmd5}'")));
-        assert_err!(monitor.check_log_md5(&format!("srcmd5 '{srcmd5}'")));
-        assert_err!(monitor.check_log_md5(&format!("srcmd5 '{branch_srcmd5}'")));
+        let _ = assert_err!(monitor.check_log_md5(&format!("srcmd5 '{srcmd5}'")));
+        let _ = assert_err!(monitor.check_log_md5(&format!("srcmd5 '{branch_srcmd5}'")));
     }
 
     #[tokio::test]

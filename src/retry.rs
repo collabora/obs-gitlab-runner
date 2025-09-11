@@ -175,7 +175,7 @@ mod tests {
         );
 
         let mut attempts = 0;
-        assert_err!(retry_request!({
+        let _ = assert_err!(retry_request!({
             attempts += 1;
             client.project("403".to_owned()).meta().await
         }));
@@ -193,7 +193,7 @@ mod tests {
         );
 
         let mut attempts = 0;
-        assert_err!(retry_request!({
+        let _ = assert_err!(retry_request!({
             attempts += 1;
             client
                 .project("403".to_owned())

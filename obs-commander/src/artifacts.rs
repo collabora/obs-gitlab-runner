@@ -40,8 +40,12 @@ pub struct ArtifactWriter {
 }
 
 impl ArtifactWriter {
+    pub fn new(inner: AsyncFile) -> Self {
+        Self { inner }
+    }
+
     #[instrument]
-    pub async fn new() -> Result<Self> {
+    pub async fn new_anon() -> Result<Self> {
         let file = tokio::task::spawn_blocking(tempfile::tempfile).await??;
         Ok(Self {
             inner: AsyncFile::from_std(file),
@@ -112,6 +116,10 @@ pub struct ArtifactReader {
 }
 
 impl ArtifactReader {
+    pub fn new(inner: AsyncFile) -> Self {
+        Self { inner }
+    }
+
     pub async fn from_async_file(file: &AsyncFile) -> Result<Self> {
         let inner = AsyncFile::options()
             .read(true)
@@ -234,7 +242,7 @@ pub mod test_support {
             F: for<'a> SaveCallback<'a, Ret, Err> + Send,
             P: AsRef<Utf8Path> + Send,
         {
-            let mut writer = ArtifactWriter::new().await?;
+            let mut writer = ArtifactWriter::new_anon().await?;
             let ret = func(&mut writer).await?;
             self.artifacts
                 .insert(path.as_ref().to_owned(), writer.into_reader().await?);

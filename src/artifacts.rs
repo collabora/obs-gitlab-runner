@@ -155,11 +155,11 @@ impl AsyncSeek for ArtifactReader {
     }
 }
 
-pub trait Callback<'a, T, E>: FnOnce(&'a mut ArtifactWriter) -> Self::Fut + Send {
+pub trait SaveCallback<'a, T, E>: FnOnce(&'a mut ArtifactWriter) -> Self::Fut + Send {
     type Fut: Future<Output = Result<T, E>> + Send;
 }
 
-impl<'a, T, E, Out, F> Callback<'a, T, E> for F
+impl<'a, T, E, Out, F> SaveCallback<'a, T, E> for F
 where
     Out: Future<Output = Result<T, E>> + Send,
     F: FnOnce(&'a mut ArtifactWriter) -> Out + Send,
@@ -190,7 +190,7 @@ pub trait ArtifactDirectory: Send + Sync {
         Report: From<Err>,
         Ret: Send,
         Err: Send,
-        F: for<'a> Callback<'a, Ret, Err> + Send,
+        F: for<'a> SaveCallback<'a, Ret, Err> + Send,
         P: AsRef<Utf8Path> + Send;
 
     async fn write(&mut self, path: impl AsRef<Utf8Path> + Send, data: &[u8]) -> Result<()> {
@@ -231,7 +231,7 @@ pub mod test_support {
             Report: From<Err>,
             Ret: Send,
             Err: Send,
-            F: for<'a> Callback<'a, Ret, Err> + Send,
+            F: for<'a> SaveCallback<'a, Ret, Err> + Send,
             P: AsRef<Utf8Path> + Send,
         {
             let mut writer = ArtifactWriter::new().await?;

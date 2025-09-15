@@ -153,7 +153,7 @@ impl ArtifactDirectory for GitLabArtifacts<'_> {
         F: for<'a> SaveCallback<'a, Ret, Err> + Send,
         P: AsRef<Utf8Path> + Send,
     {
-        let mut writer = ArtifactWriter::new().await?;
+        let mut writer = ArtifactWriter::new_anon().await?;
         let ret = func(&mut writer).await?;
         self.artifacts
             .insert(path.as_ref().to_owned(), writer.into_reader().await?);

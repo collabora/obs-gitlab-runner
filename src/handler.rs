@@ -30,6 +30,7 @@ use tracing::{debug, error, instrument, warn};
 use crate::{
     artifacts::{
         ArtifactDirectory, ArtifactReader, ArtifactWriter, MissingArtifact, MissingArtifactToNone,
+        SaveCallback,
     },
     binaries::download_binaries,
     build_meta::{
@@ -729,7 +730,7 @@ impl ArtifactDirectory for ObsJobHandler {
         Report: From<Err>,
         Ret: Send,
         Err: Send,
-        F: for<'a> crate::artifacts::Callback<'a, Ret, Err> + Send,
+        F: for<'a> SaveCallback<'a, Ret, Err> + Send,
         P: AsRef<Utf8Path> + Send,
     {
         let mut writer = ArtifactWriter::new().await?;

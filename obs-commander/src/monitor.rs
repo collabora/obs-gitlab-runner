@@ -3,10 +3,9 @@ use std::time::Duration;
 use color_eyre::eyre::{Context, Report, Result, ensure, eyre};
 use derivative::*;
 use futures_util::stream::StreamExt;
-use gitlab_runner::outputln;
 use open_build_service_api as obs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument};
 
 use crate::{
     artifacts::{ArtifactDirectory, ArtifactReader, ArtifactWriter},
@@ -193,7 +192,7 @@ impl ObsMonitor {
             .push(&self.package.repository)
             .push(&self.package.arch);
 
-        outputln!("Live build log: {}", log_url);
+        info!("Live build log: {}", log_url);
 
         let mut previous_code = None;
         let mut old_status_retries = 0;
@@ -205,9 +204,9 @@ impl ObsMonitor {
                 PackageBuildState::Building(code) => {
                     if previous_code != Some(code) {
                         if previous_code.is_some() {
-                            outputln!("Build status is now '{}'...", code);
+                            info!("Build status is now '{}'...", code);
                         } else {
-                            outputln!("Monitoring build, current status is '{}'...", code);
+                            info!("Monitoring build, current status is '{}'...", code);
                         }
                         previous_code = Some(code);
                     }
@@ -221,7 +220,7 @@ impl ObsMonitor {
                     );
 
                     if old_status_retries == 0 {
-                        outputln!("Waiting for build status to be available...");
+                        info!("Waiting for build status to be available...");
                     }
                     old_status_retries += 1;
 
@@ -251,6 +250,8 @@ impl ObsMonitor {
         let (mut file, len) = retry_request!({
             artifacts
                 .save_with(filename, async |file: &mut ArtifactWriter| {
+                    file.rewind().await.wrap_err("Failed to rewind build log")?;
+
                     let mut stream = self
                         .client
                         .project(self.package.project.clone())
@@ -289,9 +290,10 @@ mod tests {
 
     use claims::*;
     use obs::PackageCode;
+    use obs_commander_test_support::*;
     use open_build_service_mock::*;
 
-    use crate::{artifacts::test_support::MockArtifactDirectory, test_support::*};
+    use crate::artifacts::test_support::MockArtifactDirectory;
 
     use super::*;
 

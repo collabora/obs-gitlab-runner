@@ -103,12 +103,11 @@ pub fn discard_pgp(dsc: &str) -> &str {
     const PGP_HEADER_END: &str = "\n\n";
     const PGP_FOOTER_START: &str = "-----BEGIN PGP SIGNATURE-----\n";
 
-    if dsc.starts_with(PGP_HEADER_START) {
-        if let Some((_gpg_header, payload_and_sig)) = dsc.split_once(PGP_HEADER_END) {
-            if let Some((payload, _sig)) = payload_and_sig.split_once(PGP_FOOTER_START) {
-                return payload;
-            }
-        }
+    if dsc.starts_with(PGP_HEADER_START)
+        && let Some((_gpg_header, payload_and_sig)) = dsc.split_once(PGP_HEADER_END)
+        && let Some((payload, _sig)) = payload_and_sig.split_once(PGP_FOOTER_START)
+    {
+        return payload;
     }
 
     dsc

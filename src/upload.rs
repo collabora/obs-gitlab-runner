@@ -589,7 +589,16 @@ mod tests {
 
         let dsc1_file: &Utf8Path = "subdir/test-1.dsc".into();
         let dsc1_contents = format!(
-            "Source: {}\nFiles:\n {} {} {}",
+            "-----BEGIN PGP SIGNED MESSAGE-----
+
+Source: {}
+Files:
+ {} {} {}
+-----BEGIN PGP SIGNATURE-----
+aGVsbG8gd29ybGQK
+d29ybGQgaGVsbG8K
+-----END PGP SIGNATURE-----
+",
             TEST_PACKAGE_1,
             test1_md5_a,
             test1_contents_a.len(),
@@ -599,7 +608,17 @@ mod tests {
 
         let dsc2_file: &Utf8Path = "subdir/test-2.dsc".into();
         let dsc2_contents = format!(
-            "Source: {}\nFiles:\n {} {} {}\n {} {} {}",
+            "-----BEGIN PGP SIGNED MESSAGE-----
+
+Source: {}
+Files:
+ {} {} {}
+ {} {} {}
+-----BEGIN PGP SIGNATURE-----
+aGVsbG8gd29ybGQK
+d29ybGQgaGVsbG8K
+-----END PGP SIGNATURE-----
+",
             TEST_PACKAGE_1,
             test1_md5_a,
             test1_contents_a.len(),

@@ -1,10 +1,9 @@
 use std::{collections::HashMap, time::Duration};
 
 use color_eyre::eyre::{Result, WrapErr};
-use gitlab_runner::outputln;
 use open_build_service_api as obs;
 use serde::{Deserialize, Serialize};
-use tracing::{Instrument, debug, info_span, instrument};
+use tracing::{Instrument, debug, info, info_span, instrument};
 
 use crate::retry_request;
 
@@ -95,7 +94,7 @@ async fn get_status_when_ready(
     let mut status = get_status(client, project, package, repo, arch).await?;
 
     if status.dirty || is_status_empty(&status) {
-        outputln!("Waiting for package to be ready...");
+        info!("Waiting for package to be ready...");
         for attempt in 0.. {
             debug!(?attempt);
             tokio::time::sleep(options.sleep_until_ready).await;

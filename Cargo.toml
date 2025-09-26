@@ -34,7 +34,7 @@ url = "2.5"
 
 gitlab-runner = "0.3.0-rc1"
 # gitlab-runner = { path = "../gitlab-runner-rs/gitlab-runner" }
-open-build-service-api = { git = "https://github.com/collabora/open-build-service-rs" }
+open-build-service-api = { git = "https://github.com/collabora/open-build-service-rs", branch = "wip/refi64/links" }
 thiserror = "2.0.12"
 # open-build-service-api = { path = "../open-build-service-rs/open-build-service-api" }
 
@@ -46,5 +46,5 @@ zip = "5.1"
 
 gitlab-runner-mock = "0.2.1"
 # gitlab-runner-mock = { path = "../gitlab-runner-rs/gitlab-runner-mock" }
-open-build-service-mock = { git = "https://github.com/collabora/open-build-service-rs" }
+open-build-service-mock = { git = "https://github.com/collabora/open-build-service-rs", branch = "wip/refi64/links" }
 # open-build-service-mock = { path = "../open-build-service-rs/open-build-service-mock" }

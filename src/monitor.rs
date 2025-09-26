@@ -345,7 +345,9 @@ mod tests {
             TEST_PACKAGE_2.to_owned(),
             MockBranchOptions {
                 srcmd5: branch_srcmd5.clone(),
-                xsrcmd5: branch_xsrcmd5.clone(),
+                link_resolution: MockLinkResolution::Available {
+                    xsrcmd5: branch_xsrcmd5.clone(),
+                },
                 ..Default::default()
             },
         );

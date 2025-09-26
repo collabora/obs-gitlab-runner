@@ -1343,11 +1343,7 @@ mod tests {
                         .await
                 );
 
-                if build_info.is_branched {
-                    dir.linkinfo.into_iter().next().unwrap().xsrcmd5
-                } else {
-                    dir.srcmd5
-                }
+                dir.srcmd5
             }
         );
 

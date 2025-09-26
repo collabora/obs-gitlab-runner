@@ -1,10 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use bytes::Bytes;
 use camino::{Utf8Path, Utf8PathBuf};
 use color_eyre::eyre::{Context, Result, ensure, eyre};
 use derivative::*;
-use futures_util::{Stream, TryStreamExt};
 use gitlab_runner::outputln;
 use md5::{Digest, Md5};
 use open_build_service_api as obs;
@@ -19,19 +17,6 @@ use crate::{
 type Md5String = String;
 
 const META_NAME: &str = "_meta";
-
-async fn collect_byte_stream<E: std::error::Error + Send + Sync + 'static>(
-    stream: impl Stream<Item = Result<Bytes, E>>,
-) -> Result<Vec<u8>> {
-    let mut data = vec![];
-    stream
-        .try_for_each(|chunk| {
-            data.extend_from_slice(&chunk);
-            futures_util::future::ready(Ok(()))
-        })
-        .await?;
-    Ok(data)
-}
 
 pub fn compute_md5(data: &[u8]) -> String {
     base16ct::lower::encode_string(&Md5::digest(data))
@@ -169,42 +154,6 @@ impl ObsDscUploader {
     }
 
     #[instrument(skip(self))]
-    async fn find_files_to_remove(
-        &self,
-        files: &HashMap<String, Md5String>,
-    ) -> Result<HashSet<Md5String>> {
-        let mut to_remove = HashSet::new();
-
-        for file in files.keys() {
-            if file.ends_with(".dsc") {
-                to_remove.insert(file.clone());
-
-                let contents = retry_request!(
-                    collect_byte_stream(
-                        self.client
-                            .project(self.project.clone())
-                            .package(self.package.clone())
-                            .source_file(file)
-                            .await?,
-                    )
-                    .instrument(info_span!("find_files_to_remove:download", %file))
-                    .await
-                )?;
-
-                let _span = info_span!("find_files_to_remove:parse", %file);
-                let dsc: Dsc =
-                    rfc822_like::from_str(discard_pgp(std::str::from_utf8(&contents[..])?))?;
-
-                to_remove.extend(dsc.files.into_iter().map(|f| f.filename));
-            } else if file.ends_with(".changes") {
-                to_remove.insert(file.clone());
-            }
-        }
-
-        Ok(to_remove)
-    }
-
-    #[instrument(skip(self))]
     async fn get_latest_meta_md5(&self) -> Result<Md5String> {
         let dir = retry_request!(
             self.client
@@ -321,11 +270,7 @@ impl ObsDscUploader {
         let present_files: HashMap<_, _> =
             dir.entries.into_iter().map(|e| (e.name, e.md5)).collect();
 
-        let mut files_to_commit = present_files.clone();
-
-        for to_remove in self.find_files_to_remove(&files_to_commit).await? {
-            files_to_commit.remove(&to_remove);
-        }
+        let mut files_to_commit = HashMap::new();
 
         for file in &self.dsc.files {
             files_to_commit.insert(file.filename.clone(), file.hash.clone());
@@ -366,15 +311,14 @@ impl ObsDscUploader {
                 .await
         })?;
 
-        let build_srcmd5 = if let Some(link) = current_dir.linkinfo.into_iter().next() {
-            link.xsrcmd5
-        } else {
-            current_dir.srcmd5
-        };
+        ensure!(
+            current_dir.linkinfo.is_empty(),
+            "linkinfo unexpectedly present after upload"
+        );
 
         Ok(UploadResult {
             rev,
-            build_srcmd5,
+            build_srcmd5: current_dir.srcmd5,
             unchanged,
         })
     }
@@ -758,17 +702,15 @@ d29ybGQgaGVsbG8K
 
         let mut dir = assert_ok!(package_1.list(None).await);
         assert_eq!(dir.rev.as_deref(), Some("3"));
-        assert_eq!(dir.entries.len(), 5);
+        assert_eq!(dir.entries.len(), 4);
         dir.entries.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(dir.entries[0].name, "_meta");
-        assert_eq!(dir.entries[1].name, already_present_file);
-        assert_eq!(dir.entries[1].md5, already_present_md5);
-        assert_eq!(dir.entries[2].name, dsc2_file.file_name().unwrap());
-        assert_eq!(dir.entries[2].md5, dsc2_md5);
-        assert_eq!(dir.entries[3].name, test1_file);
-        assert_eq!(dir.entries[3].md5, test1_md5_a);
-        assert_eq!(dir.entries[4].name, test2_file);
-        assert_eq!(dir.entries[4].md5, test2_md5);
+        assert_eq!(dir.entries[1].name, dsc2_file.file_name().unwrap());
+        assert_eq!(dir.entries[1].md5, dsc2_md5);
+        assert_eq!(dir.entries[2].name, test1_file);
+        assert_eq!(dir.entries[2].md5, test1_md5_a);
+        assert_eq!(dir.entries[3].name, test2_file);
+        assert_eq!(dir.entries[3].md5, test2_md5);
 
         assert_eq!(dir.srcmd5, result.build_srcmd5);
 
@@ -794,17 +736,15 @@ d29ybGQgaGVsbG8K
 
         let mut dir = assert_ok!(package_1.list(None).await);
         assert_eq!(dir.rev.as_deref(), Some("4"));
-        assert_eq!(dir.entries.len(), 5);
+        assert_eq!(dir.entries.len(), 4);
         dir.entries.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(dir.entries[0].name, "_meta");
-        assert_eq!(dir.entries[1].name, already_present_file);
-        assert_eq!(dir.entries[1].md5, already_present_md5);
-        assert_eq!(dir.entries[2].name, dsc3_file.file_name().unwrap());
-        assert_eq!(dir.entries[2].md5, dsc3_md5);
-        assert_eq!(dir.entries[3].name, test1_file);
-        assert_eq!(dir.entries[3].md5, test1_md5_b);
-        assert_eq!(dir.entries[4].name, test2_file);
-        assert_eq!(dir.entries[4].md5, test2_md5);
+        assert_eq!(dir.entries[1].name, dsc3_file.file_name().unwrap());
+        assert_eq!(dir.entries[1].md5, dsc3_md5);
+        assert_eq!(dir.entries[2].name, test1_file);
+        assert_eq!(dir.entries[2].md5, test1_md5_b);
+        assert_eq!(dir.entries[3].name, test2_file);
+        assert_eq!(dir.entries[3].md5, test2_md5);
 
         assert_eq!(dir.srcmd5, result.build_srcmd5);
 
@@ -826,15 +766,13 @@ d29ybGQgaGVsbG8K
 
         let mut dir = assert_ok!(package_1.list(None).await);
         assert_eq!(dir.rev.as_deref(), Some("5"));
-        assert_eq!(dir.entries.len(), 4);
+        assert_eq!(dir.entries.len(), 3);
         dir.entries.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(dir.entries[0].name, "_meta");
-        assert_eq!(dir.entries[1].name, already_present_file);
-        assert_eq!(dir.entries[1].md5, already_present_md5);
-        assert_eq!(dir.entries[2].name, dsc4_file.file_name().unwrap());
-        assert_eq!(dir.entries[2].md5, dsc4_md5);
-        assert_eq!(dir.entries[3].name, test1_file);
-        assert_eq!(dir.entries[3].md5, test1_md5_b);
+        assert_eq!(dir.entries[1].name, dsc4_file.file_name().unwrap());
+        assert_eq!(dir.entries[1].md5, dsc4_md5);
+        assert_eq!(dir.entries[2].name, test1_file);
+        assert_eq!(dir.entries[2].md5, test1_md5_b);
 
         // Re-upload with no changes and ensure the old commit is returned.
 
@@ -873,6 +811,6 @@ d29ybGQgaGVsbG8K
         // XXX: the mock apis don't set the correct rev values on branch yet
         assert_matches!(dir.rev, Some(_));
 
-        assert_eq!(dir.linkinfo[0].xsrcmd5, result.build_srcmd5);
+        assert!(dir.linkinfo.is_empty());
     }
 }

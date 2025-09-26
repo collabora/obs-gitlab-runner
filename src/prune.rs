@@ -14,6 +14,20 @@ pub async fn prune_branch(
 ) -> Result<()> {
     // Do a sanity check to make sure this project & package are actually
     // linked (i.e. we're not going to be nuking the main repository).
+    let first_dir = retry_request!(
+        client
+            .project(project.to_owned())
+            .package(package.to_owned())
+            .list(Some("1"))
+            .await
+            .wrap_err("Failed to list package @ revision 1")
+    )?;
+
+    ensure!(
+        !first_dir.linkinfo.is_empty(),
+        "Rejecting attempt to prune a non-branched package"
+    );
+
     let dir = retry_request!(
         client
             .project(project.to_owned())
@@ -22,11 +36,6 @@ pub async fn prune_branch(
             .await
             .wrap_err("Failed to list package")
     )?;
-
-    ensure!(
-        !dir.linkinfo.is_empty(),
-        "Rejecting attempt to prune a non-branched package"
-    );
 
     if let Some(expected_rev) = expected_rev {
         if dir.rev.as_deref() != Some(expected_rev) {

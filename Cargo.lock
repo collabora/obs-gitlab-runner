@@ -555,7 +555,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -597,7 +597,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1547,7 +1547,7 @@ checksum = "a4895175b425cb1f87721b59f0f286c2092bd4af812243672510e1ac53e2e0ad"
 [[package]]
 name = "open-build-service-api"
 version = "0.1.0"
-source = "git+https://github.com/collabora/open-build-service-rs#a069b8e215c062e8cd9ec33e10cdf1fdb398f7fa"
+source = "git+https://github.com/collabora/open-build-service-rs#bd9f78ec0a26fcd9c4b23dfc8b8b1db299713fd1"
 dependencies = [
  "base16ct",
  "bytes",
@@ -1565,7 +1565,7 @@ dependencies = [
 [[package]]
 name = "open-build-service-mock"
 version = "0.1.0"
-source = "git+https://github.com/collabora/open-build-service-rs#a069b8e215c062e8cd9ec33e10cdf1fdb398f7fa"
+source = "git+https://github.com/collabora/open-build-service-rs#bd9f78ec0a26fcd9c4b23dfc8b8b1db299713fd1"
 dependencies = [
  "base16ct",
  "base64ct",
@@ -1993,7 +1993,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2362,7 +2362,7 @@ dependencies = [
  "getrandom 0.3.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

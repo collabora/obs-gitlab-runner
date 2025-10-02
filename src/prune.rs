@@ -5,6 +5,25 @@ use tracing::info;
 
 use crate::retry_request;
 
+async fn is_originally_branched(
+    client: &obs::Client,
+    project: &str,
+    package: &str,
+) -> Result<bool> {
+    // Replacing the files in a package without setting keeplink will clear the
+    // linkinfo, so in order to determine if this was once branched, fetch the
+    // very first revision and check for linkinfo there.
+    retry_request!(
+        client
+            .project(project.to_owned())
+            .package(package.to_owned())
+            .list(Some("1"))
+            .await
+            .wrap_err("Failed to list package @ revision 1")
+    )
+    .map(|first_rev| !first_rev.linkinfo.is_empty())
+}
+
 #[tracing::instrument(skip(client))]
 pub async fn prune_branch(
     client: &obs::Client,
@@ -14,6 +33,11 @@ pub async fn prune_branch(
 ) -> Result<()> {
     // Do a sanity check to make sure this project & package are actually
     // linked (i.e. we're not going to be nuking the main repository).
+    ensure!(
+        is_originally_branched(client, project, package).await?,
+        "Rejecting attempt to prune a non-branched package"
+    );
+
     let dir = retry_request!(
         client
             .project(project.to_owned())
@@ -22,11 +46,6 @@ pub async fn prune_branch(
             .await
             .wrap_err("Failed to list package")
     )?;
-
-    ensure!(
-        !dir.linkinfo.is_empty(),
-        "Rejecting attempt to prune a non-branched package"
-    );
 
     if let Some(expected_rev) = expected_rev {
         if dir.rev.as_deref() != Some(expected_rev) {

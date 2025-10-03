@@ -1,12 +1,11 @@
 use std::{collections::HashMap, time::Duration};
 
 use color_eyre::eyre::{Result, WrapErr};
-use gitlab_runner::outputln;
 use open_build_service_api as obs;
 use serde::{Deserialize, Serialize};
 use tracing::{Instrument, debug, info_span, instrument};
 
-use crate::retry_request;
+use crate::{outputln, retry_request};
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RepoArch {

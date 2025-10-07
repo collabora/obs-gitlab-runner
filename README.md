@@ -101,7 +101,7 @@ be cleaned up.
 ##### `--branch-to BRANCHED_PROJECT`
 
 Before starting an upload,
-[branch](https://openbuildservice.org/help/manuals/obs-user-guide/art.obs.bg.html#sec.obsbg.uc.branchprj)
+[branch](https://openbuildservice.org/help/manuals/obs-user-guide/art-obs-bg#sec-obsbg-uc-branchprj)
 the package to a new project, named with the value passed to the argument. Any
 uploads will now go to the branched project, and `generate-monitor` / `prune`
 will both used the branched project / package. This is particularly useful to run

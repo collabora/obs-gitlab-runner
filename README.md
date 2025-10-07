@@ -1,72 +1,18 @@
-# OBS GitLab Runner
+# OBS Build Orchestrator
 
-This is a custom [GitLab Runner](https://docs.gitlab.com/runner/) implementation
-exposing a custom command language for starting, monitoring, and cleaning up
-builds on [OBS](https://build.opensuse.org/), specifically targeting Debian
-packages.
+This repo contains tools for starting, monitoring, and cleaning up builds on
+[OBS](https://build.opensuse.org/), specifically targeting Debian packages.
+It's usable in two forms:
+
+- [obo-cli](obo-cli/README.md), a standalone CLI.
+- [obs-gitlab-runner](obs-gitlab-runner/README.md), a custom [GitLab
+  Runner](https://docs.gitlab.com/runner/).
 
 ## Usage
 
-### Sending Jobs
-
-In order to send commands in a job to the runner, set the job's `tags:` to
-include the tag you used during [the deployment](#deployment), e.g.:
-
-```yaml
-my-job:
-  tags:
-    - obs-runner  # <-- set to run on runners tagged "obs-runner"
-  stage: some-stage
-  script:
-    # [...]
-```
-
-This will run all the commands inside `before_script`, `script`, and
-`after_script` with the runner.
-
-### Supported Syntax
-
-A subset of shell syntax is supported for commands:
-
-- Commands are split at spaces, but parts can be quoted, just like in the shell:
-  ```bash
-  some-command this-is-argument-1 "this entire string is argument 2"
-  ```
-- Variable substitution is supported, as well as the `${VARIABLE:-DEFAULT}`
-  syntax to use the value `DEFAULT` if `$VARIABLE` is unset:
-  ```bash
-  some-command $a_variable ${a_variable_with_default:-this is used if unset}
-  ```
-  The variables are sourced from the pipeline-wide and job-specific variables
-  set.
-  - A significant departure from shell argument parsing is that **variable
-    contents are auto-quoted, thus spaces inside a variable do not split
-    arguments**. For example, given `MYVAR=a b c`, this:
-    ```bash
-    some-command $MYVAR
-    ```
-    is interpreted as:
-    ```bash
-    some-command 'a b c'
-    ```
-    *not*:
-    ```bash
-    some-command a b c
-    ```
-    There is no way to use a variable without auto-quoting its contents.
-
-#### Flags
-
-Any flag arguments shown below can also explicitly take a true/false value, e.g.
-`--rebuild-if-unchanged`, `--rebuild-if-unchanged=true`, and
-`--rebuild-if-unchanged=false`. This is primarily useful to conditionally set
-the value for a flag; you can set `SOME_VARIABLE=true/false` in your GitLab
-pipeline, then use that variable in a flag value as `--flag=$SOME_VARIABLE`.
-
 ### Required Environment
 
-In order to connect to OBS, three variables must be set (generally within the
-"CI/CD" section of the settings):
+In order to connect to OBS, three environment variables must be set:
 
 - `OBS_SERVER`: The URL of the OBS instance, e.g. `https://obs.somewhere.com/`.
 - `OBS_USER`: The username used to authenticate with OBS (any commits created
@@ -74,6 +20,24 @@ In order to connect to OBS, three variables must be set (generally within the
 - `OBS_PASSWORD`: The password used to authenticate the above username. Although
   there are no places where this value should be logged, **for safety purposes,
   it is highly recommended to mark this variable as *Masked*.**.
+
+For obs-gitlab-runner, these should generally be configured within the "CI/CD"
+section of the repository / group settings. **For safety purposes, it is highly
+recommended to mark the `OBS_PASSWORD` variable as *Masked*.**. (It should not
+be logged anywhere regardless, but that will provide insulation against
+mistakes.)
+
+For obo-cli, you can additionally use the `--obs-server`, `--obs-user`, and
+`--obs-password` options, but care should be taken to avoid accidentally saving
+the values into shell history or other tenuous locations.
+
+### Flag syntax
+
+Any flag arguments shown below can also explicitly take a true/false value, e.g.
+`--rebuild-if-unchanged`, `--rebuild-if-unchanged=true`, and
+`--rebuild-if-unchanged=false`. This is primarily useful to conditionally set
+the value for a flag; you can set `SOME_VARIABLE=true/false` in your CI
+pipeline, then use that variable in a flag value as `--flag=$SOME_VARIABLE`.
 
 ### Commands
 
@@ -124,7 +88,7 @@ Note that, if `--branch-to` was specified, this will, in practice, never be
 triggered: due to the way metadata files are handled, right after a branching
 operation, there will *always* be a change to upload.
 
-#### `generate-monitor`
+#### `generate-monitor` (*obs-gitlab-runner version*)
 
 ```bash
 generate-monitor RUNNER_TAG
@@ -229,6 +193,56 @@ Changes the expiration of the build results & logs.
 
 Changes the filename each monitoring job will save the build log into.
 
+#### `generate-monitor` (*obo-cli version*)
+
+```bash
+generate-monitor
+  [--download-build-results-to BUILD_RESULTS_DIR]
+  [--build-info BUILD_INFO_FILE=build-info.json]
+  [--monitor-out MONITOR_OUT=obs-monitor.json]
+  [--build-log-out BUILD_LOG_FILE=build.log]
+```
+
+Generates a JSON file `MONITOR_OUT` structured as:
+
+```json5
+{
+  "entries": [
+    {
+      "repo": "REPO",
+      "arch": "ARCH",
+      "commands": {
+        "monitor": "monitor [...]",
+        "download-binaries": "download-binaries [...]",
+      }
+    },
+    // ...
+  ]
+}
+```
+
+`entries` contains a list of OBS repository + architecture combinations, along
+with the subcommands to run to monitor a build and download the results (to be
+used as `obo THE_SUBCOMMAND`).
+
+##### `--download-build-results-to BUILD_RESULTS_DIR`
+
+Fills in `entries[*].commands.download-binaries` with a command that will
+download the build results from OBS to the given `BUILD_RESULTS_DIR`. If this
+option is not given, `commands.download-binaries` will be `null`.
+
+##### `--build-info BUILD_INFO_FILE=build-info.json`
+
+Specifies the name of the build info file to read. In particular, if a different
+build info filename was used with `dput` via
+[`--build-info-out`](#--build-info-out), then `--build-info` should be used here
+to specify the same filename.
+
+##### `--build-log-out BUILD_LOG_FILE=build.log`
+
+Changes the filename each subcommand in `entries[*].commands.monitor` will save
+the build log into.
+
 #### `prune`
 
 ```bash
@@ -261,94 +275,3 @@ is written.
 Only run the prune if a previous command in the same job failed. This is
 primarily useful if `prune` is used inside of `after_script`, to only remove the
 branched project/package if e.g. the upload failed.
-
-## Deployment
-
-### Registering the Runner
-
-In order to use the runner, you must first register it with your GitLab
-instance. This requires the use of a registration token, which can be obtained
-via the following steps:
-
-- Enter the GitLab admin area.
-- Navigate to Overview -> Runners.
-- Click "Register an instance runner".
-- Copy the registration token within.
-
-(Per-group/-project registration tokens can also be retrieved from the CI/CD
-settings of the group or project.)
-
-With this token, you can now register the runner via the [GitLab
-API](https://docs.gitlab.com/ee/api/runners.html#register-a-new-runner).
-
-Example using curl:
-
-```bash
-curl --request POST "https://$GITLAB_SERVER_URL/api/v4/runners"  \
-  --form description='OBS runner' \
-  --form run_untagged=false \
-  --form tag_list=obs-runner \
-  --form token="$REGISTRATION_TOKEN"
-```
-
-httpie:
-
-```bash
-http --form POST "https://$GITLAB_SERVER_URL/api/v4/runners" \
-  description='OBS runner' \
-  run_untagged=false \
-  tag_list=obs-runner \
-  token="$REGISTRATION_TOKEN"
-```
-
-**It is critical that you set `run_untagged=false`,** otherwise this runner
-will be used for *all* jobs that don't explicitly set a tag, rather than just
-the jobs explicitly targeting the runner.
-
-This API call will return a JSON object containing a `token` key, whose value
-is a _runner token_ that is used by the runner to connect to GitLab.
-
-### Docker
-
-Docker images are built on every commit, available at
-`ghcr.io/collabora/obs-gitlab-runner:main`. The entry point takes two arguments:
-
-- The GitLab server URL.
-- The runner token acquired previously.
-
-Simple example usage via the Docker CLI:
-
-```bash
-$ docker run --rm -it ghcr.io/collabora/obs-gitlab-runner:main \
-    "$GITLAB_SERVER_URL" "$GITLAB_RUNNER_TOKEN"
-```
-
-In addition, you can instead opt to set the `GITLAB_URL` and `GITLAB_TOKEN`
-environment variables:
-
-```bash
-$ docker run --rm -it \
-    -e GITLAB_URL="$GITLAB_SERVER_URL" \
-    -e GITLAB_TOKEN="$GITLAB_RUNNER_TOKEN" \
-    ghcr.io/collabora/obs-gitlab-runner:main
-```
-
-### Kubernetes
-
-A [Helm](https://helm.sh/) chart has been provided in the `chart/` directory,
-installable via:
-
-```bash
-$ helm install \
-    --set-string gitlab.url="$GITLAB_SERVER_URL" \
-    --set-string gitlab.token="$GITLAB_RUNNER_TOKEN" \
-    obs-gitlab-runner chart
-```
-
-Upgrades can skip setting `gitlab.token` to re-use the previously set value:
-
-```bash
-$ helm upgrade \
-    --set-string gitlab.url="$GITLAB_SERVER_URL" \
-    obs-gitlab-runner chart
-```

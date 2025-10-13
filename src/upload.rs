@@ -108,7 +108,15 @@ impl ObsDscUploader {
                 }
             }
 
+            let original_meta = client_package.meta().await?;
+
             project = branch_to;
+
+            // Update branched package build meta to match the original
+            let client_package = client.project(project.clone()).package(package.clone());
+            let mut target_meta = client_package.meta().await?;
+            target_meta.build = original_meta.build.clone();
+            client_package.set_meta(&target_meta).await?;
         }
 
         Ok(ObsDscUploader {

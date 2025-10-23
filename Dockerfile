@@ -23,4 +23,4 @@ COPY --from=build /app/target/release/obs-gitlab-runner /usr/local/bin/
 
 USER obs-gitlab-runner
 
-ENTRYPOINT /usr/local/bin/obs-gitlab-runner
+ENTRYPOINT ["/usr/local/bin/obs-gitlab-runner"]

@@ -42,7 +42,7 @@ thiserror = "2.0.12"
 claims = "0.8"
 rstest = "0.26"
 wiremock = "0.6"
-zip = "5.1"
+zip = "7.0"
 
 gitlab-runner-mock = "0.2.1"
 # gitlab-runner-mock = { path = "../gitlab-runner-rs/gitlab-runner-mock" }

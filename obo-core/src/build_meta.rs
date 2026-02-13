@@ -125,10 +125,9 @@ impl BuildMeta {
                 for cause in e.chain() {
                     if let Some(obs::Error::ApiError(obs::ApiError { code, .. })) =
                         cause.downcast_ref::<obs::Error>()
+                        && code == "unknown_package"
                     {
-                        if code == "unknown_package" {
-                            return Ok(None);
-                        }
+                        return Ok(None);
                     }
                 }
 
@@ -247,8 +246,7 @@ impl BuildMeta {
                 prev_endtime_for_commit: jobhist
                     .jobhist
                     .iter()
-                    .filter(|e| e.srcmd5 == srcmd5)
-                    .next_back()
+                    .rfind(|e| e.srcmd5 == srcmd5)
                     .map(|e| e.endtime),
             })
             .collect()

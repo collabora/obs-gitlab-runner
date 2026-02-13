@@ -413,8 +413,8 @@ async fn check_for_artifact(
     let path = path.components().collect::<Utf8PathBuf>();
 
     // TODO: not spawn a sync environment for *every single artifact*
-    if let Some(mut artifact) = dep.download().await? {
-        if let Some(file) = tokio::task::spawn_blocking(move || {
+    if let Some(mut artifact) = dep.download().await?
+        && let Some(file) = tokio::task::spawn_blocking(move || {
             artifact
                 .file(path.as_str())
                 .map(|mut file| {
@@ -426,11 +426,10 @@ async fn check_for_artifact(
                 .transpose()
         })
         .await??
-        {
-            return Ok(Some(
-                ArtifactReader::from_async_file(&AsyncFile::from_std(file)).await?,
-            ));
-        }
+    {
+        return Ok(Some(
+            ArtifactReader::from_async_file(&AsyncFile::from_std(file)).await?,
+        ));
     }
 
     Ok(None)

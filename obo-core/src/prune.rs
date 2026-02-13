@@ -45,14 +45,14 @@ pub async fn prune_branch(
             .wrap_err("Failed to list package")
     )?;
 
-    if let Some(expected_rev) = expected_rev {
-        if dir.rev.as_deref() != Some(expected_rev) {
-            outputln!(
-                "Latest revision is {}, skipping prune",
-                dir.rev.as_deref().unwrap_or("[unknown]")
-            );
-            return Ok(());
-        }
+    if let Some(expected_rev) = expected_rev
+        && dir.rev.as_deref() != Some(expected_rev)
+    {
+        outputln!(
+            "Latest revision is {}, skipping prune",
+            dir.rev.as_deref().unwrap_or("[unknown]")
+        );
+        return Ok(());
     }
 
     retry_request!(

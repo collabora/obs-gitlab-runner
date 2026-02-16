@@ -17,7 +17,7 @@ futures-util.workspace = true
 md-5 = "0.10"
 obo-test-support = { path = "../obo-test-support" }
 open-build-service-api.workspace = true
-reqwest = "0.12"
+reqwest = "0.13"
 rfc822-like = "0.2"
 serde.workspace = true
 serde_json.workspace = true

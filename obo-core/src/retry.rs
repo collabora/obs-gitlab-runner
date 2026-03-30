@@ -3,6 +3,7 @@ use std::time::Duration;
 use color_eyre::{Report, eyre::Result};
 use open_build_service_api as obs;
 use tokio_retry2::strategy::{FibonacciBackoff, jitter};
+use tracing::{debug, warn};
 
 fn is_retriable_error(err: &(dyn std::error::Error + 'static)) -> bool {
     if let Some(err) = err.downcast_ref::<reqwest::Error>() {
@@ -43,6 +44,7 @@ impl Default for Retrier {
 impl Retrier {
     pub async fn handle_request_error(&mut self, report: Report) -> Result<()> {
         if !is_caused_by_retriable_error(&report) {
+            debug!(%report, "error is not retriable");
             return Err(report);
         }
 
@@ -50,6 +52,7 @@ impl Retrier {
             return Err(report);
         };
 
+        warn!(%report, ?delay, "Request failed, retrying after delay");
         tokio::time::sleep(delay).await;
         Ok(())
     }

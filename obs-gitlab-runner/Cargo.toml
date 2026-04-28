@@ -23,7 +23,7 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 shellexpand = "3.1"
 shell-words.workspace = true
-strum = { version = "0.27", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -41,4 +41,4 @@ obo-tests = { path = "../obo-tests" }
 open-build-service-mock.workspace = true
 rstest.workspace = true
 wiremock.workspace = true
-zip = "5.1"
+zip = "8.6"

@@ -29,9 +29,9 @@ url = "2.5"
 
 [dev-dependencies]
 claims.workspace = true
-gitlab-runner-mock = "0.2.1"
+gitlab-runner-mock = "0.3.0"
 obo-test-support = { path = "../obo-test-support" }
 obo-tests = { path = "../obo-tests" }
 open-build-service-mock.workspace = true
 rstest.workspace = true
-tokio-stream = { version = "0.1.17", features = ["io-util"] }
+tokio-stream = { version = "0.1.18", features = ["io-util"] }

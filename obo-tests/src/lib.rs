@@ -113,6 +113,8 @@ pub async fn test_dput<C: TestContext>(
     let dsc1_bad_contents =
         dsc1_contents.replace(test1_file, &(test1_file.to_owned() + ".missing"));
 
+    let commit_message = "my commit";
+
     context.obs().mock.add_project(TEST_PROJECT.to_owned());
 
     context.obs().mock.add_or_update_repository(
@@ -163,9 +165,15 @@ pub async fn test_dput<C: TestContext>(
     let mut dput_command = format!("dput {TEST_PROJECT} {dsc1_file}");
     let mut created_project = TEST_PROJECT.to_owned();
 
-    if test == DputTest::Branch {
-        created_project += ":branched";
-        dput_command += &format!(" --branch-to {created_project}");
+    match test {
+        DputTest::Branch => {
+            created_project += ":branched";
+            dput_command += &format!(" --branch-to {created_project}");
+        }
+        DputTest::Basic => {
+            dput_command += &format!(" --message '{commit_message}'");
+        }
+        _ => {}
     }
 
     let dput = context
@@ -340,15 +348,12 @@ pub async fn test_dput<C: TestContext>(
         assert_none!(arch_2.prev_endtime_for_commit);
     }
 
-    let mut dir = assert_ok!(
-        context
-            .obs()
-            .client
-            .project(created_project.clone())
-            .package(TEST_PACKAGE_1.to_owned())
-            .list(None)
-            .await
-    );
+    let package = context
+        .obs()
+        .client
+        .project(created_project.clone())
+        .package(TEST_PACKAGE_1.to_owned());
+    let mut dir = assert_ok!(package.list(None).await);
 
     assert_eq!(dir.entries.len(), 3);
     dir.entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -359,6 +364,14 @@ pub async fn test_dput<C: TestContext>(
     assert_eq!(dir.entries[2].name, dsc1_file);
     assert_eq!(dir.entries[2].size, dsc1_contents.len() as u64);
     assert_eq!(dir.entries[2].md5, dsc1_md5);
+
+    let revisions = assert_ok!(package.revisions().await);
+    let revision = assert_some!(revisions.revisions.last());
+    if test == DputTest::Basic {
+        assert_eq!(revision.comment.as_deref(), Some(commit_message));
+    } else {
+        assert_eq!(revision.comment.as_deref(), Some(dsc1_file));
+    }
 
     (dput.artifacts(), build_info)
 }

@@ -70,6 +70,8 @@ pub struct DputAction {
     pub build_info_out: Utf8PathBuf,
     #[clap(long, flag_supporting_explicit_value())]
     pub rebuild_if_unchanged: bool,
+    #[clap(long, default_value = "")]
+    pub message: String,
 }
 
 #[derive(Parser, Debug)]
@@ -236,7 +238,12 @@ impl Actions {
         .await?;
         debug!(?initial_build_meta);
 
-        let result = uploader.upload_package(artifacts).await?;
+        let message = if !args.message.is_empty() {
+            Some(args.message.as_str())
+        } else {
+            None
+        };
+        let result = uploader.upload_package(artifacts, message).await?;
 
         // If we couldn't get the metadata before because the package didn't
         // exist yet, get it now but without history, so we leave the previous

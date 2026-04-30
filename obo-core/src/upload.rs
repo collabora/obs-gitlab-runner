@@ -248,7 +248,11 @@ impl ObsDscUploader {
     }
 
     #[instrument(skip(artifacts))]
-    pub async fn upload_package(&self, artifacts: &impl ArtifactDirectory) -> Result<UploadResult> {
+    pub async fn upload_package(
+        &self,
+        artifacts: &impl ArtifactDirectory,
+        commit_message: Option<&str>,
+    ) -> Result<UploadResult> {
         let dsc_parent = self
             .dsc_path
             .parent()
@@ -257,6 +261,8 @@ impl ObsDscUploader {
             .dsc_path
             .file_name()
             .ok_or_else(|| eyre!("Invalid dsc path: {}", self.dsc_path))?;
+
+        let commit_message = commit_message.unwrap_or(dsc_filename);
 
         outputln!(
             "Uploading {} to {}/{}...",
@@ -285,7 +291,7 @@ impl ObsDscUploader {
 
         let (rev, unchanged) = if files_to_commit != present_files {
             (
-                self.commit(dsc_filename, dsc_parent, files_to_commit, artifacts)
+                self.commit(commit_message, dsc_parent, files_to_commit, artifacts)
                     .await?,
                 false,
             )
@@ -643,7 +649,7 @@ d29ybGQgaGVsbG8K
             )
             .await
         );
-        let result = assert_ok!(uploader.upload_package(&artifacts).await);
+        let result = assert_ok!(uploader.upload_package(&artifacts, None).await);
         assert_eq!(result.rev, "1");
         assert!(!result.unchanged);
 
@@ -696,7 +702,7 @@ d29ybGQgaGVsbG8K
             )
             .await
         );
-        let result = assert_ok!(uploader.upload_package(&artifacts).await);
+        let result = assert_ok!(uploader.upload_package(&artifacts, Some("extra")).await);
         assert_eq!(result.rev, "3");
         assert!(!result.unchanged);
 
@@ -714,6 +720,10 @@ d29ybGQgaGVsbG8K
 
         assert_eq!(dir.srcmd5, result.build_srcmd5);
 
+        let revisions = assert_ok!(package_1.revisions().await);
+        let revision = assert_some!(revisions.revisions.last());
+        assert_eq!(revision.comment.as_deref(), Some("extra"));
+
         // Change the contents of one of the files.
         artifacts
             .write(format!("subdir/{test1_file}"), test1_contents_b)
@@ -730,7 +740,7 @@ d29ybGQgaGVsbG8K
             )
             .await
         );
-        let result = assert_ok!(uploader.upload_package(&artifacts).await);
+        let result = assert_ok!(uploader.upload_package(&artifacts, None).await);
         assert_eq!(result.rev, "4");
         assert!(!result.unchanged);
 
@@ -760,7 +770,7 @@ d29ybGQgaGVsbG8K
             )
             .await
         );
-        let result = assert_ok!(uploader.upload_package(&artifacts).await);
+        let result = assert_ok!(uploader.upload_package(&artifacts, None).await);
         assert_eq!(result.rev, "5");
         assert!(!result.unchanged);
 
@@ -776,7 +786,7 @@ d29ybGQgaGVsbG8K
 
         // Re-upload with no changes and ensure the old commit is returned.
 
-        let result = assert_ok!(uploader.upload_package(&artifacts).await);
+        let result = assert_ok!(uploader.upload_package(&artifacts, None).await);
         assert_eq!(result.rev, "5");
         assert!(result.unchanged);
 
@@ -796,7 +806,7 @@ d29ybGQgaGVsbG8K
             .await
         );
         assert_eq!(uploader.project(), branched_project);
-        let result = assert_ok!(uploader.upload_package(&artifacts).await);
+        let result = assert_ok!(uploader.upload_package(&artifacts, None).await);
         // TODO: check the revision, once the mock APIs have branches
         // incorporate the origin's history
         assert!(!result.unchanged);

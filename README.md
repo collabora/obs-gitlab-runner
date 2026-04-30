@@ -47,6 +47,7 @@ pipeline, then use that variable in a flag value as `--flag=$SOME_VARIABLE`.
 dput PROJECT DSC_FILE
   [--branch-to BRANCHED_PROJECT]
   [--build-info-out BUILD_INFO_FILE=build-info.json]
+  [--message MESSAGE]
   [--rebuild-if-unchanged]
 ```
 
@@ -76,6 +77,11 @@ projects.
 ##### `--build-info-out BUILD_INFO_FILE=build-info.json`
 
 Changes the filename that the build info will be written to.
+
+##### `--message MESSAGE`
+
+If non-empty, uses `MESSAGE` as the commit message / comment, instead of the
+default message (the .dsc file's basename).
 
 ##### `--rebuild-if-unchanged`
 

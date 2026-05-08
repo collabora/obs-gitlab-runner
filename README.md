@@ -50,6 +50,7 @@ dput PROJECT DSC_FILE
   [--message MESSAGE]
   [--rebuild-if-unchanged]
   [--exclude-arch EXCLUDED_ARCH]
+  [--exclude-repo EXCLUDED_REPO]
 ```
 
 This will upload the given .dsc file, as well as any files referenced by it, to

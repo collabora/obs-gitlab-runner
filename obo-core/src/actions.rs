@@ -74,6 +74,8 @@ pub struct DputAction {
     pub message: String,
     #[clap(long)]
     pub exclude_arch: Vec<String>,
+    #[clap(long)]
+    pub exclude_repo: Vec<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -236,6 +238,7 @@ impl Actions {
                 // since the new version can change the supported architectures.
                 disabled_repos: DisabledRepos::Keep,
                 exclude_arch: args.exclude_arch.clone(),
+                exclude_repo: args.exclude_repo.clone(),
             },
         )
         .await?;
@@ -268,6 +271,7 @@ impl Actions {
                         wait_options: Default::default(),
                     },
                     exclude_arch: args.exclude_arch,
+                    exclude_repo: args.exclude_repo,
                 },
             )
             .await?

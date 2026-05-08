@@ -58,6 +58,7 @@ pub struct BuildMetaOptions {
     pub history_retrieval: BuildHistoryRetrieval,
     pub disabled_repos: DisabledRepos,
     pub exclude_arch: Vec<String>,
+    pub exclude_repo: Vec<String>,
 }
 
 #[instrument(skip(client))]
@@ -157,6 +158,11 @@ impl BuildMeta {
         let mut repos = HashMap::new();
 
         for repo_meta in project_meta.repositories {
+            if options.exclude_repo.contains(&repo_meta.name) {
+                debug!(repo = %repo_meta.name, "Excluded by options");
+                continue;
+            }
+
             for arch in repo_meta.arches {
                 if options.exclude_arch.contains(&arch) {
                     debug!(repo = %repo_meta.name, %arch, "Excluded by options");
@@ -350,6 +356,7 @@ mod tests {
                         wait_options: Default::default()
                     },
                     exclude_arch: vec![],
+                    exclude_repo: vec![],
                 }
             )
             .await
@@ -377,6 +384,7 @@ mod tests {
                         wait_options: Default::default()
                     },
                     exclude_arch: vec![TEST_ARCH_1.to_string()],
+                    exclude_repo: vec![],
                 }
             )
             .await
@@ -395,6 +403,7 @@ mod tests {
                         wait_options: Default::default()
                     },
                     exclude_arch: vec![],
+                    exclude_repo: vec![],
                 }
             )
             .await
@@ -443,6 +452,7 @@ mod tests {
                         wait_options: Default::default()
                     },
                     exclude_arch: vec![],
+                    exclude_repo: vec![],
                 }
             )
             .await
@@ -478,6 +488,7 @@ mod tests {
                         wait_options: Default::default()
                     },
                     exclude_arch: vec![],
+                    exclude_repo: vec![],
                 }
             )
             .await
@@ -514,6 +525,7 @@ mod tests {
                         wait_options: Default::default()
                     },
                     exclude_arch: vec![],
+                    exclude_repo: vec![],
                 }
             )
             .await
@@ -529,6 +541,7 @@ mod tests {
                     history_retrieval: BuildHistoryRetrieval::Full,
                     disabled_repos: DisabledRepos::Keep,
                     exclude_arch: vec![],
+                    exclude_repo: vec![],
                 }
             )
             .await
@@ -537,6 +550,68 @@ mod tests {
 
         assert_ok!(meta.remove_disabled_repos(&Default::default()).await);
         assert_eq!(meta.repos.len(), 0);
+
+        mock.add_or_update_repository(
+            TEST_PROJECT,
+            TEST_REPO.to_owned(),
+            TEST_ARCH_1.to_owned(),
+            MockRepositoryCode::Finished,
+        );
+
+        mock.add_or_update_repository(
+            TEST_PROJECT,
+            TEST_REPO.to_owned(),
+            TEST_ARCH_2.to_owned(),
+            MockRepositoryCode::Finished,
+        );
+
+        mock.add_or_update_repository(
+            TEST_PROJECT,
+            TEST_REPO_EXTRA.to_owned(),
+            TEST_ARCH_1.to_owned(),
+            MockRepositoryCode::Finished,
+        );
+
+        mock.add_or_update_repository(
+            TEST_PROJECT,
+            TEST_REPO_EXTRA.to_owned(),
+            TEST_ARCH_2.to_owned(),
+            MockRepositoryCode::Finished,
+        );
+
+        let meta = assert_ok!(
+            BuildMeta::get(
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                TEST_PACKAGE_1.to_owned(),
+                &BuildMetaOptions {
+                    history_retrieval: BuildHistoryRetrieval::Full,
+                    disabled_repos: DisabledRepos::Keep,
+                    exclude_arch: vec![],
+                    exclude_repo: vec![],
+                }
+            )
+            .await
+        );
+        assert_eq!(meta.repos.len(), 4);
+
+        let meta = assert_ok!(
+            BuildMeta::get(
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                TEST_PACKAGE_1.to_owned(),
+                &BuildMetaOptions {
+                    history_retrieval: BuildHistoryRetrieval::Full,
+                    disabled_repos: DisabledRepos::Keep,
+                    exclude_arch: vec![],
+                    exclude_repo: vec![TEST_REPO_EXTRA.to_owned()],
+                }
+            )
+            .await
+        );
+        assert_eq!(meta.repos.len(), 2);
+        assert!(meta.repos.contains_key(&repo_arch_1));
+        assert!(meta.repos.contains_key(&repo_arch_2));
     }
 
     #[rstest]
@@ -588,6 +663,7 @@ mod tests {
                         wait_options: Default::default()
                     },
                     exclude_arch: vec![],
+                    exclude_repo: vec![],
                 }
             )
             .await
@@ -643,6 +719,7 @@ mod tests {
                         DisabledRepos::Keep
                     },
                     exclude_arch: vec![],
+                    exclude_repo: vec![],
                 }
             )
             .await

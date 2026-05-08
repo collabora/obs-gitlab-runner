@@ -8,6 +8,7 @@ pub const TEST_PROJECT: &str = "foo";
 pub const TEST_PACKAGE_1: &str = "bar";
 pub const TEST_PACKAGE_2: &str = "baz";
 pub const TEST_REPO: &str = "repo";
+pub const TEST_REPO_EXTRA: &str = "repo_extra";
 pub const TEST_ARCH_1: &str = "aarch64";
 pub const TEST_ARCH_2: &str = "x86_64";
 

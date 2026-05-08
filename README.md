@@ -49,6 +49,7 @@ dput PROJECT DSC_FILE
   [--build-info-out BUILD_INFO_FILE=build-info.json]
   [--message MESSAGE]
   [--rebuild-if-unchanged]
+  [--exclude-arch EXCLUDED_ARCH]
 ```
 
 This will upload the given .dsc file, as well as any files referenced by it, to

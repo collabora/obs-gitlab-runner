@@ -57,6 +57,7 @@ pub enum DisabledRepos {
 pub struct BuildMetaOptions {
     pub history_retrieval: BuildHistoryRetrieval,
     pub disabled_repos: DisabledRepos,
+    pub exclude_arch: Vec<String>,
 }
 
 #[instrument(skip(client))]
@@ -157,6 +158,11 @@ impl BuildMeta {
 
         for repo_meta in project_meta.repositories {
             for arch in repo_meta.arches {
+                if options.exclude_arch.contains(&arch) {
+                    debug!(repo = %repo_meta.name, %arch, "Excluded by options");
+                    continue;
+                }
+
                 if let DisabledRepos::Skip { wait_options } = &options.disabled_repos {
                     let status = get_status_when_ready(
                         &client,
@@ -343,6 +349,7 @@ mod tests {
                     disabled_repos: DisabledRepos::Skip {
                         wait_options: Default::default()
                     },
+                    exclude_arch: vec![],
                 }
             )
             .await
@@ -365,10 +372,29 @@ mod tests {
                 TEST_PROJECT.to_owned(),
                 TEST_PACKAGE_1.to_owned(),
                 &BuildMetaOptions {
+                    history_retrieval: BuildHistoryRetrieval::Full,
+                    disabled_repos: DisabledRepos::Skip {
+                        wait_options: Default::default()
+                    },
+                    exclude_arch: vec![TEST_ARCH_1.to_string()],
+                }
+            )
+            .await
+        );
+        assert_eq!(meta.repos.len(), 1);
+        assert!(meta.repos.contains_key(&repo_arch_2));
+
+        let meta = assert_ok!(
+            BuildMeta::get(
+                client.clone(),
+                TEST_PROJECT.to_owned(),
+                TEST_PACKAGE_1.to_owned(),
+                &BuildMetaOptions {
                     history_retrieval: BuildHistoryRetrieval::None,
                     disabled_repos: DisabledRepos::Skip {
                         wait_options: Default::default()
                     },
+                    exclude_arch: vec![],
                 }
             )
             .await
@@ -416,6 +442,7 @@ mod tests {
                     disabled_repos: DisabledRepos::Skip {
                         wait_options: Default::default()
                     },
+                    exclude_arch: vec![],
                 }
             )
             .await
@@ -450,6 +477,7 @@ mod tests {
                     disabled_repos: DisabledRepos::Skip {
                         wait_options: Default::default()
                     },
+                    exclude_arch: vec![],
                 }
             )
             .await
@@ -485,6 +513,7 @@ mod tests {
                     disabled_repos: DisabledRepos::Skip {
                         wait_options: Default::default()
                     },
+                    exclude_arch: vec![],
                 }
             )
             .await
@@ -499,6 +528,7 @@ mod tests {
                 &BuildMetaOptions {
                     history_retrieval: BuildHistoryRetrieval::Full,
                     disabled_repos: DisabledRepos::Keep,
+                    exclude_arch: vec![],
                 }
             )
             .await
@@ -556,7 +586,8 @@ mod tests {
                     history_retrieval: BuildHistoryRetrieval::Full,
                     disabled_repos: DisabledRepos::Skip {
                         wait_options: Default::default()
-                    }
+                    },
+                    exclude_arch: vec![],
                 }
             )
             .await
@@ -611,6 +642,7 @@ mod tests {
                     } else {
                         DisabledRepos::Keep
                     },
+                    exclude_arch: vec![],
                 }
             )
             .await

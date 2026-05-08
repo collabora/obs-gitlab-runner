@@ -72,6 +72,8 @@ pub struct DputAction {
     pub rebuild_if_unchanged: bool,
     #[clap(long, default_value = "")]
     pub message: String,
+    #[clap(long)]
+    pub exclude_arch: Vec<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -233,6 +235,7 @@ impl Actions {
                 // Getting disabled repos has to happen *after* the upload,
                 // since the new version can change the supported architectures.
                 disabled_repos: DisabledRepos::Keep,
+                exclude_arch: args.exclude_arch.clone(),
             },
         )
         .await?;
@@ -264,6 +267,7 @@ impl Actions {
                     disabled_repos: DisabledRepos::Skip {
                         wait_options: Default::default(),
                     },
+                    exclude_arch: args.exclude_arch,
                 },
             )
             .await?

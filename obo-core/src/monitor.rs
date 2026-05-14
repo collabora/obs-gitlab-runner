@@ -48,7 +48,6 @@ pub struct MonitoredPackage {
 pub struct PackageMonitoringOptions {
     pub sleep_on_building: Duration,
     pub sleep_on_old_status: Duration,
-    pub max_old_status_retries: usize,
 }
 
 impl Default for PackageMonitoringOptions {
@@ -56,7 +55,6 @@ impl Default for PackageMonitoringOptions {
         PackageMonitoringOptions {
             sleep_on_building: Duration::from_secs(10),
             sleep_on_old_status: Duration::from_secs(15),
-            max_old_status_retries: 40, // 15 seconds * 40 tries = 10 minutes
         }
     }
 }
@@ -195,7 +193,7 @@ impl ObsMonitor {
         outputln!("Live build log: {}", log_url);
 
         let mut previous_code = None;
-        let mut old_status_retries = 0;
+        let mut printed_waiting = false;
 
         loop {
             let state = self.get_latest_state().await?;
@@ -214,15 +212,10 @@ impl ObsMonitor {
                     tokio::time::sleep(options.sleep_on_building).await;
                 }
                 PackageBuildState::PendingStatusPosted => {
-                    ensure!(
-                        old_status_retries < options.max_old_status_retries,
-                        "Old build status has been posted for too long."
-                    );
-
-                    if old_status_retries == 0 {
+                    if !printed_waiting {
                         outputln!("Waiting for build status to be available...");
+                        printed_waiting = true;
                     }
-                    old_status_retries += 1;
 
                     tokio::time::sleep(options.sleep_on_old_status).await;
                 }
@@ -231,10 +224,10 @@ impl ObsMonitor {
                 }
             }
 
-            // Reset the retry count out here if we didn't have an old status
-            // again.
+            // Reset the flag so the message is printed again if we re-enter
+            // the old status after some other state.
             if !matches!(state, PackageBuildState::PendingStatusPosted) {
-                old_status_retries = 0;
+                printed_waiting = false;
             }
         }
     }
@@ -809,62 +802,5 @@ mod tests {
             state,
             PackageBuildState::Completed(PackageCompletion::Succeeded)
         );
-    }
-
-    #[tokio::test]
-    async fn test_fails_after_repeated_duplicate_endtimes() {
-        let srcmd5 = random_md5();
-
-        let mock = create_default_mock().await;
-
-        mock.add_project(TEST_PROJECT.to_owned());
-        mock.add_new_package(
-            TEST_PROJECT,
-            TEST_PACKAGE_1.to_owned(),
-            MockPackageOptions::default(),
-        );
-
-        mock.add_package_revision(
-            TEST_PROJECT,
-            TEST_PACKAGE_1,
-            MockRevisionOptions {
-                srcmd5: srcmd5.clone(),
-                ..Default::default()
-            },
-            HashMap::new(),
-        );
-
-        mock.add_or_update_repository(
-            TEST_PROJECT,
-            TEST_REPO.to_owned(),
-            TEST_ARCH_1.to_owned(),
-            MockRepositoryCode::Building,
-        );
-
-        let client = create_default_client(&mock);
-        let monitor = ObsMonitor::new(
-            client.clone(),
-            MonitoredPackage {
-                project: TEST_PROJECT.to_owned(),
-                package: TEST_PACKAGE_1.to_owned(),
-                repository: TEST_REPO.to_owned(),
-                arch: TEST_ARCH_1.to_owned(),
-                rev: "1".to_owned(),
-                srcmd5: srcmd5.clone(),
-                prev_endtime_for_commit: None,
-            },
-        );
-
-        let options = PackageMonitoringOptions {
-            sleep_on_old_status: Duration::from_millis(100),
-            max_old_status_retries: 4,
-            ..Default::default()
-        };
-
-        let result = assert_ok!(
-            tokio::time::timeout(Duration::from_secs(5), monitor.monitor_package(options)).await
-        );
-        let err = assert_err!(result);
-        assert!(err.to_string().contains("Old build status"), "{err:?}");
     }
 }

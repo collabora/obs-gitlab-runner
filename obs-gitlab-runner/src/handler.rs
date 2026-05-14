@@ -704,9 +704,6 @@ mod tests {
         monitor: PackageMonitoringOptions {
             sleep_on_building: Duration::ZERO,
             sleep_on_old_status: MONITOR_TEST_OLD_STATUS_SLEEP_DURATION,
-            // High limit, since we don't really test that
-            // functionality in the handler tests.
-            max_old_status_retries: 99,
         },
     };
 

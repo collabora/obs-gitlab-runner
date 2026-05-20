@@ -13,7 +13,7 @@ clap.workspace = true
 color-eyre.workspace = true
 derivative.workspace = true
 futures-util.workspace = true
-gitlab-runner = "0.3.0"
+gitlab-runner = "0.3.2"
 # gitlab-runner = { path = "../../gitlab-runner-rs/gitlab-runner" }
 obo-core = { path = "../obo-core" }
 obo-test-support = { path = "../obo-test-support" }
@@ -35,8 +35,8 @@ url = "2.5"
 
 [dev-dependencies]
 claims.workspace = true
-gitlab-runner-mock = "0.3.0"
-# gitlab-runner-mock = { path = "../gitlab-runner-rs/gitlab-runner-mock" }
+gitlab-runner-mock = "0.3.2"
+# gitlab-runner-mock = { path = "../../gitlab-runner-rs/gitlab-runner-mock" }
 obo-tests = { path = "../obo-tests" }
 open-build-service-mock.workspace = true
 rstest.workspace = true

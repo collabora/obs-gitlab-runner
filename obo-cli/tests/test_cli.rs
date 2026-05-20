@@ -102,6 +102,14 @@ impl RunBuilder<'_> for CliRunBuilder {
             .env("OBS_SERVER", self.obs_server)
             .env("OBS_USER", TEST_USER)
             .env("OBS_PASSWORD", TEST_PASS)
+            .env(
+                "OBO_LOG",
+                if should_enable_trace_logging() {
+                    "obo_core=trace,obo_cli=trace"
+                } else {
+                    ""
+                },
+            )
             .env("OBO_TEST_LOG_TAIL", MONITOR_TEST_LOG_TAIL.to_string())
             .env("OBO_TEST_SLEEP_ON_BUILDING_MS", "0")
             .env(

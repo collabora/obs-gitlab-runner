@@ -533,7 +533,19 @@ pub async fn test_monitoring<C: TestContext>(
     );
 
     assert_eq!(
-        log.contains(&log_contents),
+        // If trace-level logging is enabled, and the implementation mixes
+        // together script output with the trace logs (i.e. the CLI), then our
+        // rather short test log *probably* ended up in the log output at some
+        // point. In that case, make sure to require a leading newline, so it
+        // should only match if the logs were explicitly printed on its own
+        // line(s) vs the debug/trace-level logs that have a header. (This is
+        // very janky, but it *only* applies in an explicitly opt-in case, so if
+        // anything actually breaks it's not a huge deal.)
+        if should_enable_trace_logging() {
+            log.contains(&format!("\n{log_contents}"))
+        } else {
+            log.contains(&log_contents)
+        },
         !success && log_test == MonitorLogTest::Short
     );
 

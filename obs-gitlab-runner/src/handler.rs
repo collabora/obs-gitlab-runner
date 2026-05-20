@@ -576,6 +576,7 @@ mod tests {
         variables: HashMap<String, String>,
         handler: Box<dyn GitLabRunHandlerWrapper>,
         timeout: Duration,
+        artifacts_patterns: Vec<String>,
     }
 
     fn create_obs_job_handler_factory(
@@ -629,6 +630,15 @@ mod tests {
             self
         }
 
+        fn saves<I: IntoIterator>(mut self, patterns: I) -> Self
+        where
+            I::Item: AsRef<str>,
+        {
+            self.artifacts_patterns
+                .extend(patterns.into_iter().map(|x| x.as_ref().to_owned()));
+            self
+        }
+
         fn artifacts(mut self, artifacts: Self::ArtifactsHandle) -> Self {
             self.dependencies.push(artifacts.0);
             self
@@ -662,15 +672,17 @@ mod tests {
                 );
             }
 
-            builder.add_artifact(
-                None,
-                false,
-                vec!["*".to_owned()],
-                Some(MockJobArtifactWhen::Always),
-                "archive".to_owned(),
-                Some("zip".to_owned()),
-                None,
-            );
+            if !self.artifacts_patterns.is_empty() {
+                builder.add_artifact(
+                    None,
+                    false,
+                    self.artifacts_patterns,
+                    Some(MockJobArtifactWhen::Always),
+                    "archive".to_owned(),
+                    Some("zip".to_owned()),
+                    None,
+                );
+            }
 
             for dependency in self.dependencies {
                 builder.dependency(dependency);
@@ -729,6 +741,7 @@ mod tests {
             artifacts: HashMap<String, Vec<u8>>,
         ) -> Self::ArtifactsHandle {
             self.run()
+                .saves(artifacts.keys())
                 .job_handler_factory(|_| PutArtifactsHandler {
                     artifacts: Arc::new(artifacts),
                 })
@@ -776,6 +789,7 @@ mod tests {
                     _phantom: PhantomData,
                 }),
                 timeout: EXECUTION_DEFAULT_TIMEOUT,
+                artifacts_patterns: vec![],
             }
         }
     }
@@ -861,6 +875,7 @@ mod tests {
         let generate = context
             .run()
             .command(generate_command)
+            .saves(&[DEFAULT_MONITOR_PIPELINE])
             .artifacts(dput.clone())
             .go()
             .await;
@@ -953,6 +968,10 @@ mod tests {
                 build_info,
                 &enabled.repo_arch,
                 &script,
+                &artifact_paths
+                    .into_iter()
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>(),
                 success,
                 dput_test,
                 log_test,
@@ -1163,6 +1182,7 @@ mod tests {
             } else {
                 context.run().command("generate-monitor tag")
             }
+            .saves(&[DEFAULT_MONITOR_PIPELINE])
             .artifacts(build_info);
 
             let generate = if test == Some(GenerateMonitorTimeoutLocation::HandlerOption) {

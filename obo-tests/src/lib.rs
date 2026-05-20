@@ -17,6 +17,10 @@ use obo_test_support::*;
 use open_build_service_api as obs;
 use open_build_service_mock::*;
 
+pub fn should_enable_trace_logging() -> bool {
+    std::env::var_os("OBO_TEST_TRACE").is_some()
+}
+
 #[derive(Clone)]
 pub struct ObsContext {
     pub client: obs::Client,

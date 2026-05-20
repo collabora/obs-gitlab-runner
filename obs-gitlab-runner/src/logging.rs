@@ -73,11 +73,31 @@ impl<S: Subscriber + Send + Sync + 'static + for<'span> LookupSpan<'span>, F: Fi
     }
 
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+        // When Filtered's Layer implementation methods are invoked on an event
+        // *prior* to on_event() (e.g. enabled()), it will set thread-local
+        // state indicating whether or not the currently-processed event should
+        // be enabled. Then, within on_event(), if the event was in fact
+        // disabled, the thread-local state gets reset, to clear things out for
+        // the next event to be processed. In other words, Filtered holds hard
+        // assumptions about the order of methods called when processing an
+        // event, and it uses these assumptions to manage its state.
+        //
+        // This also means that, if we don't *always* call on_event here, those
+        // assumptions are *violated*, and an event being disabled can carry
+        // over to the processing of the next event.
+        self.0.on_event(event, ctx.clone());
+
         if !is_output_field_set_in_event(event) {
-            // No special behavior needed, so just forward it as-is.
-            self.0.on_event(event, ctx);
+            // No special behavior needed, so just leave things as-is.
             return;
         }
+
+        // If an event had both the obo *and* gitlab-runner output fields set,
+        // then it would get logged twice (once by the above on_event, and once
+        // by our bypass below). This is pretty obvious to avoid, but it's still
+        // worth making sure that in debug builds (e.g. tests) it doesn't
+        // happen.
+        debug_assert!(!self.0.filter().enabled(event.metadata(), &ctx));
 
         let Some(message) = get_event_message(event) else {
             return;
@@ -107,7 +127,8 @@ impl<S: Subscriber + Send + Sync + 'static + for<'span> LookupSpan<'span>, F: Fi
         };
 
         // Bypass the filter completely, because the event was almost certainly
-        // filtered out in its `enabled` due to lacking `gitlab.output`.
+        // filtered out due to lacking `gitlab.output` (and we already called
+        // on_event() for the filter at the start of the function).
         self.0.inner().on_event(&event, ctx);
     }
 

@@ -453,7 +453,7 @@ mod tests {
     use rstest::rstest;
     use tempfile::TempDir;
     use tracing::{Level, instrument::WithSubscriber};
-    use tracing_subscriber::{Layer, Registry, filter::Targets, prelude::*};
+    use tracing_subscriber::{Registry, filter::Targets, prelude::*};
     use zip::ZipArchive;
 
     use crate::logging::GitLabForwarder;
@@ -816,9 +816,19 @@ mod tests {
                     .with(
                         tracing_subscriber::fmt::layer()
                             .with_test_writer()
-                            .with_filter(
-                                Targets::new().with_target("obs_gitlab_runner", Level::TRACE),
-                            ),
+                            .with_filter(if should_enable_trace_logging() {
+                                Targets::new()
+                                    .with_target("obo_core", Level::TRACE)
+                                    .with_target("obs_gitlab_runner", Level::TRACE)
+                            } else {
+                                // If trace-level logging isn't enabled, we want
+                                // the global filter to match what the runner is
+                                // typically run with as closely as possible.
+                                // Since 'tracing' is very complex, this helps
+                                // ensure we don't break something in a way that
+                                // passes tests but fails in practice.
+                                Targets::new().with_default(Level::INFO)
+                            }),
                     )
                     .with(tracing_error::ErrorLayer::default())
                     .with(GitLabForwarder::new(layer)),

@@ -69,6 +69,13 @@ impl RunBuilder<'_> for CliRunBuilder {
         self
     }
 
+    fn saves<I: IntoIterator>(self, _patterns: I) -> Self
+    where
+        I::Item: AsRef<str>,
+    {
+        self
+    }
+
     fn artifacts(mut self, artifacts: Self::ArtifactsHandle) -> Self {
         self.dependencies.push(artifacts.0);
         self
@@ -249,6 +256,7 @@ async fn test_monitor_table(
     let generate = context
         .run()
         .command(generate_command)
+        .saves(&[DEFAULT_MONITOR_TABLE])
         .artifacts(dput.clone())
         .go()
         .await;
@@ -279,6 +287,7 @@ async fn test_monitor_table(
             build_info,
             &enabled.repo_arch,
             &script,
+            &[],
             success,
             dput_test,
             log_test,

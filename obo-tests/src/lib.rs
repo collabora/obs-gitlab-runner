@@ -55,6 +55,13 @@ pub trait RunBuilder<'context>: Send + Sync + Sized {
         self.script(&[cmd.into()])
     }
 
+    // Sets the patterns of files that will be saved by the given commands, so
+    // that implementations that need to list out saved artifacts like the
+    // gitlab runner can verify those lists are correct.
+    fn saves<I: IntoIterator>(self, _patterns: I) -> Self
+    where
+        I::Item: AsRef<str>;
+
     fn script(self, cmd: &[String]) -> Self;
     fn artifacts(self, artifacts: Self::ArtifactsHandle) -> Self;
     fn timeout(self, timeout: Duration) -> Self;
@@ -183,6 +190,7 @@ pub async fn test_dput<C: TestContext>(
     let dput = context
         .run()
         .command(dput_command.replace(dsc1_file, dsc1_bad_file))
+        .saves(&[DEFAULT_BUILD_INFO])
         .artifacts(artifacts.clone())
         .go()
         .await;
@@ -201,6 +209,7 @@ pub async fn test_dput<C: TestContext>(
     let mut dput = context
         .run()
         .command(&dput_command)
+        .saves(&[DEFAULT_BUILD_INFO])
         .artifacts(artifacts.clone())
         .go()
         .await;
@@ -277,6 +286,7 @@ pub async fn test_dput<C: TestContext>(
         dput = context
             .run()
             .command(&dput_command)
+            .saves(&[DEFAULT_BUILD_INFO])
             .artifacts(artifacts.clone())
             .go()
             .await;
@@ -299,6 +309,7 @@ pub async fn test_dput<C: TestContext>(
             dput = context
                 .run()
                 .command(format!("{dput_command} --rebuild-if-unchanged"))
+                .saves(&[DEFAULT_BUILD_INFO])
                 .artifacts(artifacts.clone())
                 .go()
                 .await;
@@ -403,6 +414,7 @@ pub async fn test_monitoring<C: TestContext>(
     build_info: &ObsBuildInfo,
     repo: &RepoArch,
     script: &[String],
+    artifact_paths: &[String],
     success: bool,
     dput_test: DputTest,
     log_test: MonitorLogTest,
@@ -508,6 +520,7 @@ pub async fn test_monitoring<C: TestContext>(
     let monitor = context
         .run()
         .script(script)
+        .saves(artifact_paths)
         .artifacts(dput.clone())
         .timeout(MONITOR_TEST_OLD_STATUS_SLEEP_DURATION * 20)
         .go()

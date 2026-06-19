@@ -1,8 +1,8 @@
 [package]
 name = "obs-gitlab-runner"
-version = "0.1.8"
-edition = "2024"
-license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

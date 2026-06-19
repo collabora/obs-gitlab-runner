@@ -8,6 +8,11 @@ members = [
   "obs-gitlab-runner"
 ]
 
+[workspace.package]
+version = "0.1.8"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
 [workspace.dependencies]
 async-trait = "0.1"
 camino = "1.2"

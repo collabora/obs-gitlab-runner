@@ -1752,9 +1752,9 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "open-build-service-api"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b57803d6cf55358b48dfd66339f33ba936ce5c5c9a7c388889bad93c0c5a880"
+checksum = "6c44d5a2ad7c7fc4219b1ceed31e58254ae5a292d344e8f9ab4b95f7828701ef"
 dependencies = [
  "base16ct",
  "bytes",

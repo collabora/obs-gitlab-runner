@@ -16,7 +16,7 @@ clap = { version = "4.6", features = ["default", "derive", "env"] }
 color-eyre = "0.6"
 derivative = "2.2"
 futures-util = "0.3"
-open-build-service-api = "0.1.0"
+open-build-service-api = "0.1.1"
 # open-build-service-api = { path = "../open-build-service-rs/open-build-service-api" }
 open-build-service-mock = "0.1.0"
 # open-build-service-mock = { path = "../open-build-service-rs/open-build-service-mock" }

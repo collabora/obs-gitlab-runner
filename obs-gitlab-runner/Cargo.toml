@@ -41,4 +41,4 @@ obo-tests = { path = "../obo-tests" }
 open-build-service-mock.workspace = true
 rstest.workspace = true
 wiremock.workspace = true
-zip = "8.6"
+zip = "9.0"

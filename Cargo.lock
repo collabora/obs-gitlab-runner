@@ -958,9 +958,9 @@ dependencies = [
 
 [[package]]
 name = "gitlab-runner-mock"
-version = "0.3.2"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c83aac627f2dc4a11bb4074638275c3274851efa5c1f891305a7c22f1e9d5fdf"
+checksum = "433b5fbdad82d9c5ef6359fdaeb0f6a550480ed150fbdb2d8bfabcac74b8965a"
 dependencies = [
  "futures",
  "http",

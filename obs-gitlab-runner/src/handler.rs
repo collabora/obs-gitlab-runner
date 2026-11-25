@@ -1,8 +1,4 @@
-use std::{
-    borrow::Cow,
-    collections::{HashMap, HashSet},
-    io::Seek,
-};
+use std::{borrow::Cow, collections::HashMap, io::Seek};
 
 use async_trait::async_trait;
 use camino::{Utf8Path, Utf8PathBuf};
@@ -11,7 +7,8 @@ use color_eyre::eyre::{Context, Report, Result, eyre};
 use derivative::*;
 use futures_util::StreamExt;
 use gitlab_runner::{
-    JobHandler, JobResult, Phase, UploadableFile,
+    JobResult, Phase, UploadableFile,
+    commands::{CommandHandler, ParseCommandError},
     job::{Dependency, Job, Variable},
 };
 use obo_core::{
@@ -97,7 +94,8 @@ enum JobAction {
 #[derive(Parser)]
 #[clap(bin_name = "obs-gitlab-runner")]
 #[clap(no_binary_name = true)]
-struct Command {
+#[clap(version)]
+pub struct Command {
     #[clap(subcommand)]
     action: JobAction,
 }
@@ -195,31 +193,6 @@ impl ObsJobHandler {
         Ok(ObsJobHandler::new(job, client, options))
     }
 
-    fn expand_vars<'s>(
-        &self,
-        s: &'s str,
-        quote: bool,
-        expanding: &mut HashSet<String>,
-    ) -> Cow<'s, str> {
-        shellexpand::env_with_context_no_errors(s, |var| {
-            if !expanding.insert(var.to_owned()) {
-                return Some("".to_string());
-            }
-
-            let value = self.job.variable(var).map_or("", |v| v.value());
-            let expanded = self.expand_vars(value, false, expanding);
-            expanding.remove(var);
-            Some(
-                if quote {
-                    shell_words::quote(expanded.as_ref())
-                } else {
-                    expanded
-                }
-                .into_owned(),
-            )
-        })
-    }
-
     #[instrument(skip(self))]
     async fn generate_monitor(&mut self, args: GenerateMonitorAction) -> Result<()> {
         let mut artifacts = GitLabArtifacts {
@@ -268,16 +241,8 @@ impl ObsJobHandler {
         Ok(())
     }
 
-    #[instrument(skip(self))]
-    async fn command(&mut self, cmdline: &str) -> Result<()> {
-        // TODO: inject user?
-        let cmdline = self.expand_vars(cmdline, true, &mut HashSet::new());
-
-        outputln!("> {}", cmdline);
-
-        let args = shell_words::split(&cmdline).wrap_err("Invalid command line")?;
-        let command = Command::try_parse_from(args)?;
-
+    #[instrument(skip(self, command))]
+    async fn execute_command(&mut self, command: Command) -> Result<()> {
         match command.action {
             JobAction::Common(action) => {
                 let mut artifacts = GitLabArtifacts {
@@ -363,22 +328,38 @@ impl UploadableFile for UploadableArtifact {
 }
 
 #[async_trait]
-impl JobHandler<UploadableArtifact> for ObsJobHandler {
-    async fn step(&mut self, script: &[String], _phase: Phase) -> JobResult {
-        for command in script {
-            if let Err(err) = self.command(command).await {
-                // Failed builds would already have information on them printed
-                // above, so don't print anything on them again.
-                if !err.is::<FailedBuild>() {
-                    error!(gitlab.output = true, "Error running command: {:?}", err);
-                }
+impl CommandHandler<UploadableArtifact> for ObsJobHandler {
+    type Command = Command;
 
-                self.script_failed = true;
-                return Err(());
+    fn job(&self) -> &Job {
+        &self.job
+    }
+
+    fn on_entry(&mut self, entry: &str, _phase: Phase) {
+        outputln!("> {}", entry);
+    }
+
+    async fn command(&mut self, command: Command, _phase: Phase) -> JobResult {
+        if let Err(err) = self.execute_command(command).await {
+            // Failed builds have already been reported.
+            if !err.is::<FailedBuild>() {
+                error!(gitlab.output = true, "Error running command: {:?}", err);
             }
+            self.script_failed = true;
+            return Err(());
         }
-
         Ok(())
+    }
+
+    async fn parse_error(
+        &mut self,
+        _entry: &str,
+        _phase: Phase,
+        error: ParseCommandError,
+    ) -> JobResult {
+        error!(gitlab.output = true, "Error running command: {}", error);
+        self.script_failed = true;
+        Err(())
     }
 
     async fn get_uploadable_files(
@@ -445,7 +426,9 @@ mod tests {
     };
 
     use claims::*;
-    use gitlab_runner::{GitlabLayer, Runner, RunnerBuilder};
+    use gitlab_runner::{
+        GitlabLayer, JobHandler, Runner, RunnerBuilder, commands::CommandHandlerAdapter,
+    };
     use gitlab_runner_mock::*;
     use obo_core::build_meta::{EnabledRepo, RepoArch};
     use obo_test_support::*;
@@ -581,8 +564,12 @@ mod tests {
 
     fn create_obs_job_handler_factory(
         options: HandlerOptions,
-    ) -> impl FnOnce(Job) -> ObsJobHandler {
-        move |job| assert_ok!(ObsJobHandler::from_obs_config_in_job(job, options))
+    ) -> impl FnOnce(Job) -> CommandHandlerAdapter<ObsJobHandler> {
+        move |job| {
+            CommandHandlerAdapter::new(assert_ok!(ObsJobHandler::from_obs_config_in_job(
+                job, options
+            )))
+        }
     }
 
     impl GitLabRunBuilder<'_> {

@@ -2,7 +2,7 @@ use std::{fmt, str::FromStr, sync::Arc};
 
 use clap::Parser;
 use color_eyre::eyre::Result;
-use gitlab_runner::{GitlabLayer, RunnerBuilder};
+use gitlab_runner::{GitlabLayer, RunnerBuilder, commands::CommandHandlerAdapter};
 use logging::GitLabForwarder;
 use strum::{Display, EnumString};
 use tracing::{Subscriber, error, info};
@@ -152,6 +152,7 @@ async fn main() {
                             ..Default::default()
                         },
                     )
+                    .map(CommandHandlerAdapter::new)
                     .map_err(|err| {
                         error!("Failed to create new client: {:?}", err);
                     })
